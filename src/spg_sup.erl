@@ -27,13 +27,19 @@ start_link() ->
 
 %% Allow up to 10 crashes per minute. Why? Well, why not...
 init([]) ->
+    Scopes = case application:get_env(scopes) of
+                 {ok, Scopes0} ->
+                     Scopes0;
+                 _ ->
+                     [spg]
+             end,
     {ok, {
         #{strategy => one_for_one, intensity => 10, period => 60},
         [
-            #{id => spg,
-                start => {spg, start_link, []},
+            #{id => Scope,
+                start => {spg, start_link, [Scope]},
                 restart => transient,
                 shutdown => 1000,
                 modules => [spg]
-            }
+            } || Scope <- Scopes
         ]}}.

@@ -72,10 +72,8 @@ start_node(Name0) ->
     {Name0, Socket} = spgt:spawn_node(?PROPER_SERVER, Name),
     Socket.
 
-stop_node({true, Node, _}) ->
-    true = spgt:stop_node(Node);
-stop_node({false, _, Socket}) ->
-    spgt:rpc(Socket, erlang, halt, []).
+stop_node({_, Node, Socket}) ->
+    true = spgt:stop_node(Node, Socket).
 
 start_proc({direct, _, _}) ->
     spgt:spawn();
@@ -92,17 +90,14 @@ stop_proc({false, _, Socket}, Pid) ->
     spgt:rpc(Socket, spgt, stop_proc, [Pid]).
 
 connect_peer(Access, To) ->
-    true = connect_peer(Access, To, 5).
+    true = connect_peer(Access, To, connect_peer_impl(Access, To), 5).
 
-connect_peer(Access, To, 1) ->
+connect_peer(_Access, _To, true, _) ->
+    true;
+connect_peer(Access, To, false, 1) ->
     connect_peer_impl(Access, To);
-connect_peer(Access, To, Retry) ->
-    case connect_peer_impl(Access, To) of
-        true ->
-            connect_peer(Access, To, Retry - 1);
-        Other ->
-            Other
-    end.
+connect_peer(Access, To, false, Retry) ->
+    connect_peer(Access, To, connect_peer_impl(Access, To), Retry - 1).
 
 connect_peer_impl({direct, _, _}, NodeTwo) ->
     net_kernel:connect_node(NodeTwo);
@@ -262,7 +257,11 @@ command(State) ->
                 [{call, ?MODULE, start_node, [Node]} | Cmds];
             (Node, #node{links = Links, procs = Procs} = Info, Cmds) ->
                 Access = access(Node, Info),
-                basic(Access) ++ links(Access, NodesUp, Links) ++ procs(Access, maps:keys(Procs)) ++ Cmds
+                [
+                    {call, ?MODULE, stop_node, [Access]} || node() =/= Node
+                ] ++
+                    basic(Access) ++ links(Access, NodesUp, Links) ++
+                        procs(Access, maps:keys(Procs)) ++ Cmds
         end, [], State),
     oneof(Commands).
 
@@ -275,7 +274,12 @@ next_state(State, Socket, {call, ?MODULE, start_node, [Name]}) ->
         end, State),
     State1#{Name => Node#node{up = true, socket = Socket, links = [node()]}};
 next_state(State, _Res, {call, ?MODULE, stop_node, [{_, Name, _}]}) ->
-    State#{Name => #node{}};
+    % remove links from all nodes
+    State1 = maps:map(
+        fun (_N, #node{links = Links} = Node) ->
+            Node#node{links = lists:delete(Name, Links)}
+        end, State),
+    State1#{Name => #node{}};
 
 next_state(State, Res, {call, ?MODULE, start_proc, [{_, Name, _}]}) ->
     #{Name := Node} = State,
@@ -312,23 +316,34 @@ next_state(State, _Res, _Call) ->
 
 prop_spg_no_crash(Config) when is_list(Config) ->
     ?FORALL(Cmds, commands(?MODULE),
-        begin
-            {ok, Pid} = spg:start_link(?PROPER_SERVER),
-            {History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
-            test_server_ctrl:kill_slavenodes(),
-            gen_server:stop(Pid),
-            ?WHENFAIL(
-                begin
-                ct:pal("Failed: ~200p~nCommands: ~200p~nHistory: ~200p~nState: ~200p~nResult: ~200p",
-                    [case History of [] -> "init"; _ -> lists:nth(length(History), Cmds) end,
-                        Cmds, History, State, Result]),
-                ?assert(false)
-                end,
-                Result =:= ok)
-        end).
+        ?TRAPEXIT(
+            begin
+                {ok, Pid} = spg:start_link(?PROPER_SERVER),
+                {History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
+                % cleanup: kill slave nodes
+                Name = node(),
+                % kill processes
+                #{Name := #node{procs = Procs}} = State,
+                [exit(P, kill) || P <- maps:keys(Procs)],
+                % stop pgs server
+                ok = gen_server:stop(Pid),
+                % close sockets & stop controlling procs
+                [spgt:stop_node(N, Sock) ||
+                    {N, #node{up = true, socket = Sock}} <- maps:to_list(State), Name =/= N],
+                % check no slaves are still running
+                [] = ets:match_object(slave_tab,'_'),
+                rand:uniform(80) =:= 80 andalso io:fwrite(user, "\n", []),
+                ?WHENFAIL(
+                    begin
+                        ct:pal("Failed: ~200p~nCommands: ~200p~nHistory: ~200p~nState: ~200p~nResult: ~200p",
+                            [case History of [] -> "init"; _ -> lists:nth(length(History), Cmds) end,
+                                Cmds, History, State, Result])
+                    end,
+                    Result =:= ok)
+            end)).
 
 spg_proper_check() ->
-    [{doc, "PropEr tests for spg module, long, 30 minute timeout"}, {timetrap, {seconds, 30 * 60}}].
+    [{doc, "PropEr tests for spg module, long, 60 minute timeout"}, {timetrap, {seconds, 120 * 60}}].
 
 spg_proper_check(Config) ->
-    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 1000}]).
+    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 15000}, {to_file, user}]).

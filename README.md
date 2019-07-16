@@ -1,8 +1,14 @@
 spg: Scalable Process Groups
 =====
 
-Replacement for Erlang/OTP pg2 implementation.
+Replacement for Erlang/OTP pg2 implementation, with several restrictions.
 Implements Strong Eventual Consistency (SEC).
+
+Assumptions
+-----------
+
+Architecture
+------------
 
 Build
 -----
@@ -17,14 +23,14 @@ coverage reports are turned off by default.
 
 It is however possible to run spg_SUITE with coverage turned on.
 
-Model
------
 
+### Model
 Commands:
  * nodeup/nodedown
  * connect/disconnect peer node (between any 2 nodes)
  * spawn/kill process (on any node)
  * join/leave group (any node, any process, leave can be tried even when process did not join)
+ * (not implemented yet) start/stop spg scope
  
 Properties:
  * process group contains only accessible pids
@@ -40,6 +46,15 @@ Compatibility
 -------------
 Protocol is not compatible with OTP pg2 module. Additional work is
 required to make it work in a single cluster.
+
+Feature requests
+----------------
+Next releases are going to contain:
+ * multi-join/leave: multiple processes joining a group or leaving a group
+ * customisation for which_groups() to return groups sorted (using ordered_set internally)
+ * group membership changes notifications
+ * (debatable) completely empty groups (for drop-in pg2 compatibility), and a concept of 'group owner'
+
 
 Changelog
 ---------

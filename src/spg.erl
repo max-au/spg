@@ -111,8 +111,10 @@ join(Group, Pid) ->
     join(?DEFAULT_SCOPE, Group, Pid).
 
 -spec join(Scope :: atom(), Group :: group(), Pid :: pid() | [pid()]) -> ok | already_joined.
-join(Scope, Group, Pid) when is_pid(Pid), node(Pid) =:= node() ->
-    gen_server:call(Scope, {join_local, Group, Pid}).
+join(Scope, Group, PidOrPids) ->
+    Node = node(),
+    is_list(PidOrPids) andalso [error({nolocal, Pid}) || Pid <- PidOrPids, node(Pid) =/= Node orelse not is_pid(Pid)],
+    gen_server:call(Scope, {join_local, Group, PidOrPids}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -123,8 +125,10 @@ leave(Group, Pid) ->
     leave(?DEFAULT_SCOPE, Group, Pid).
 
 -spec leave(Scope :: atom(), Group :: group(), Pid :: pid() | [pid()]) -> ok.
-leave(Scope, Group, Pid) when node(Pid) =:= node() ->
-    gen_server:call(Scope, {leave_local, Group, Pid}).
+leave(Scope, Group, PidOrPids) ->
+    Node = node(),
+    is_list(PidOrPids) andalso [error({nolocal, Pid}) || Pid <- PidOrPids, node(Pid) =/= Node orelse not is_pid(Pid)],
+    gen_server:call(Scope, {leave_local, Group, PidOrPids}).
 
 -spec get_members(Group :: group()) -> [pid()].
 get_members(Group) ->
@@ -188,39 +192,17 @@ init([Scope]) ->
                   From :: {pid(),Tag :: any()},
                   State :: state()) -> {reply, ok, state()}.
 
-handle_call({join_local, Group, Pid}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
-    case maps:find(Pid, Monitors) of
-        {ok, {MRef, Groups}} ->
-            join_local_group(Scope, Group, Pid),
-            broadcast(Scope, {join, Group, Pid}),
-            {reply, ok, State#state{monitors = maps:put(Pid, {MRef, [Group | Groups]}, Monitors)}};
-        error ->
-            MRef = erlang:monitor(process, Pid),
-            join_local_group(Scope, Group, Pid),
-            NewMons = Monitors#{Pid => {MRef, [Group]}},
-            broadcast(Scope, {join, Group, Pid}),
-            {reply, ok, State#state{monitors = NewMons}}
-    end;
+handle_call({join_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
+    NewMons = join_monitors(PidOrPids, Group, Monitors),
+    join_local_group(Scope, Group, PidOrPids),
+    broadcast(Scope, {join, Group, PidOrPids}),
+    {reply, ok, State#state{monitors = NewMons}};
 
-handle_call({leave_local, Group, Pid}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
-    case maps:find(Pid, Monitors) of
-        {ok, {MRef, [Group]}} ->
-            erlang:demonitor(MRef),
-            leave_local_group(Scope, Group, Pid),
-            broadcast(Scope, {leave, Pid, [Group]}),
-            {reply, ok, State#state{monitors = maps:remove(Pid, Monitors)}};
-        {ok, {MRef, Groups}} ->
-            case lists:member(Group, Groups) of
-                true ->
-                    leave_local_group(Scope, Group, Pid),
-                    broadcast(Scope, {leave, Pid, [Group]}),
-                    {reply, ok, State#state{monitors = maps:put(Pid, {MRef, lists:delete(Group, Groups)}, Monitors)}};
-                false ->
-                    {reply, ok, State}
-            end;
-        _ ->
-            {reply, ok, State}
-    end;
+handle_call({leave_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
+    NewMons = leave_monitors(PidOrPids, Group, Monitors),
+    leave_local_group(Scope, Group, PidOrPids),
+    broadcast(Scope, {leave, PidOrPids, [Group]}),
+    {reply, ok, State#state{monitors = NewMons}};
 
 handle_call(_Request, _From, _S) ->
     error(badarg).
@@ -236,13 +218,13 @@ handle_cast({sync, Peer, Groups}, #state{scope = Scope, nodes = Nodes} = State) 
     {noreply, State#state{nodes = handle_sync(Scope, Peer, Nodes, Groups)}};
 
 % remote pid joining (multiple group, potentially)
-handle_cast({join, Group, Pid}, #state{scope = Scope} = State) when node() =/= node(Pid) ->
-    join_remote(Scope, Group, Pid),
+handle_cast({join, Group, PidOrPids}, #state{scope = Scope} = State) ->
+    join_remote(Scope, Group, PidOrPids),
     {noreply, State};
 
 % remote pid leaving (multiple groups at once)
-handle_cast({leave, Pid, Groups}, #state{scope = Scope} = State) when node() =/= node(Pid) ->
-    leave_remote(Scope, Pid, Groups),
+handle_cast({leave, PidOrPids, Groups}, #state{scope = Scope} = State) ->
+    leave_remote(Scope, PidOrPids, Groups),
     {noreply, State};
 
 % we're being discovered, let's exchange!
@@ -331,47 +313,113 @@ handle_sync(Scope, Peer, Nodes, Groups0) ->
     [join_remote(Scope, Group, Pids) || {Group, Pids} <- NewGroups],
     Nodes#{Peer => MRef}.
 
-join_local_group(Scope, Group, Pid) ->
+join_monitors(Pid, Group, Monitors) when is_pid(Pid) ->
+    case maps:find(Pid, Monitors) of
+        {ok, {MRef, Groups}} ->
+            maps:put(Pid, {MRef, [Group | Groups]}, Monitors);
+        error ->
+            MRef = erlang:monitor(process, Pid),
+            Monitors#{Pid => {MRef, [Group]}}
+    end;
+join_monitors([], _Group, Monitors) ->
+    Monitors;
+join_monitors([Pid | Tail], Group, Monitors) ->
+    join_monitors(Tail, Group, join_monitors(Pid, Group, Monitors)).
+
+join_local_group(Scope, Group, Pid) when is_pid(Pid) ->
     case ets:lookup(Scope, Group) of
         [{Group, All, Local}] ->
             ets:insert(Scope, {Group, [Pid | All], [Pid | Local]});
         [] ->
             ets:insert(Scope, {Group, [Pid], [Pid]})
-    end.
-
-join_remote(Scope, Group, Pids) when is_list(Pids) ->
+    end;
+join_local_group(Scope, Group, Pids) ->
     case ets:lookup(Scope, Group) of
         [{Group, All, Local}] ->
-            ets:insert(Scope, {Group, Pids ++ All, Local});
+            ets:insert(Scope, {Group, Pids ++ All, Pids ++ Local});
         [] ->
-            ets:insert(Scope, {Group, Pids, []})
-    end;
-join_remote(Scope, Group, Pid) ->
+            ets:insert(Scope, {Group, Pids, Pids})
+    end.
+
+join_remote(Scope, Group, Pid) when is_pid(Pid) ->
     case ets:lookup(Scope, Group) of
         [{Group, All, Local}] ->
             ets:insert(Scope, {Group, [Pid | All], Local});
         [] ->
             ets:insert(Scope, {Group, [Pid], []})
+    end;
+join_remote(Scope, Group, Pids) ->
+    case ets:lookup(Scope, Group) of
+        [{Group, All, Local}] ->
+            ets:insert(Scope, {Group, All ++ Pids, Local});
+        [] ->
+            ets:insert(Scope, {Group, Pids, []})
     end.
 
-leave_local_group(Scope, Group, Pid) ->
+leave_monitors(Pid, Group, Monitors) when is_pid(Pid) ->
+    case maps:find(Pid, Monitors) of
+        {ok, {MRef, [Group]}} ->
+            erlang:demonitor(MRef),
+            maps:remove(Pid, Monitors);
+        {ok, {MRef, Groups}} ->
+            case lists:member(Group, Groups) of
+                true ->
+                    maps:put(Pid, {MRef, lists:delete(Group, Groups)}, Monitors);
+                false ->
+                    Monitors
+            end;
+        _ ->
+            Monitors
+    end;
+leave_monitors([], _Group, Monitors) ->
+    Monitors;
+leave_monitors([Pid | Tail], Group, Monitors) ->
+    leave_monitors(Tail, Group, leave_monitors(Pid, Group, Monitors)).
+
+leave_local_group(Scope, Group, Pid) when is_pid(Pid) ->
     case ets:lookup(Scope, Group) of
         [{Group, [Pid], [Pid]}] ->
             ets:delete(Scope, Group);
         [{Group, All, Local}] ->
-            ets:insert(Scope, {Group, lists:delete(Pid,All), lists:delete(Pid, Local)});
+            ets:insert(Scope, {Group, lists:delete(Pid, All), lists:delete(Pid, Local)});
         [] ->
             % rare race condition when 'DOWN' from monitor stays in msg queue while process is leave-ing.
             true
+    end;
+leave_local_group(Scope, Group, Pids) ->
+    case ets:lookup(Scope, Group) of
+        [{Group, All, Local}] ->
+            case All -- Pids of
+                [] ->
+                    ets:delete(Scope, Group);
+                NewAll ->
+                    ets:insert(Scope, {Group, NewAll, Local -- Pids})
+            end;
+        [] ->
+            true
     end.
 
-leave_remote(Scope, Pid, Groups) ->
+leave_remote(Scope, Pid, Groups) when is_pid(Pid) ->
     _ = [
         case ets:lookup(Scope, Group) of
             [{Group, [Pid], []}] ->
                 ets:delete(Scope, Group);
             [{Group, All, Local}] ->
                 ets:insert(Scope, {Group, lists:delete(Pid, All), Local});
+            [] ->
+                true
+        end ||
+        Group <- Groups];
+leave_remote(Scope, Pids, Groups) ->
+    _ = [
+        case ets:lookup(Scope, Group) of
+            [{Group, All, Local}] ->
+                case All -- Pids of
+                    [] when Local =:= [] ->
+                        ets:delete(Scope, Group);
+                    NewAll ->
+                        ets:insert(Scope, {Group, NewAll, Local})
+                end;
             [] ->
                 true
         end ||

@@ -132,7 +132,7 @@ control(Scope) ->
 
 server(Control, Scope) ->
     try
-        {ok, Pid} = spg:start_link(Scope),
+        {ok, Pid} = spg:start(Scope),
         {ok, Listen} = gen_tcp:listen(0, [{mode, binary}, {packet, 4}, {ip, ?LOCALHOST}]),
         {ok, Port} = inet:port(Listen),
         Control ! {port, Port, Pid},

@@ -231,7 +231,9 @@ procs(Access, Procs) ->
     [
         {call, ?MODULE, stop_proc, [Access, elements(Procs)]},
         {call, ?MODULE, join_group, [Access, elements(Procs), elements(?GROUPS)]},
-        {call, ?MODULE, leave_group, [Access, elements(Procs), elements(?GROUPS)]}
+        {call, ?MODULE, leave_group, [Access, elements(Procs), elements(?GROUPS)]},
+        {call, ?MODULE, join_group, [Access, list(oneof(Procs)), elements(?GROUPS)]},
+        {call, ?MODULE, leave_group, [Access, list(oneof(Procs)), elements(?GROUPS)]}
     ].
 
 access(Node, _) when Node =:= node() ->
@@ -303,9 +305,25 @@ next_state(State, _Res, {call, ?MODULE, disconnect_peer, [{_, Name1, _}, Name2]}
         Name2 => Node2#node{links = lists:delete(Name1, Node2#node.links)}
     };
 
+next_state(State, _Res, {call, ?MODULE, join_group, [{_, Name, _}, Pids, Group]}) when is_list(Pids) ->
+    #{Name := Node} = State,
+    Node1 = lists:foldl(
+        fun (Pid, Node0) ->
+            Node0#node{procs = maps:update_with(Pid, fun (L) -> [Group | L] end, Node0#node.procs)}
+        end, Node, Pids),
+    State#{Name => Node1};
+
 next_state(State, _Res, {call, ?MODULE, join_group, [{_, Name, _}, Pid, Group]}) ->
     #{Name := Node} = State,
     State#{Name => Node#node{procs = maps:update_with(Pid, fun (L) -> [Group | L] end, Node#node.procs)}};
+
+next_state(State, _Res, {call, ?MODULE, leave_group, [{_, Name, _}, Pids, Group]}) when is_list(Pids) ->
+    #{Name := Node} = State,
+    Node1 = lists:foldl(
+        fun (Pid, Node0) ->
+            Node0#node{procs = maps:update_with(Pid, fun (L) -> lists:delete(Group, L) end, Node0#node.procs)}
+        end, Node, Pids),
+    State#{Name => Node1};
 
 next_state(State, _Res, {call, ?MODULE, leave_group, [{_, Name, _}, Pid, Group]}) ->
     #{Name := Node} = State,
@@ -343,7 +361,7 @@ prop_spg_no_crash(Config) when is_list(Config) ->
             end)).
 
 spg_proper_check() ->
-    [{doc, "PropEr tests for spg module, long, 60 minute timeout"}, {timetrap, {seconds, 120 * 60}}].
+    [{doc, "PropEr tests for spg module, long, 2 hours timeout"}, {timetrap, {seconds, 120 * 60}}].
 
 spg_proper_check(Config) ->
-    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 15000}, {to_file, user}]).
+    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 10000}, {to_file, user}]).

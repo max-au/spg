@@ -30,7 +30,8 @@ Commands:
  * connect/disconnect peer node (between any 2 nodes)
  * spawn/kill process (on any node)
  * join/leave group (any node, any process, leave can be tried even when process did not join)
- * (not implemented yet) start/stop spg scope
+ * multi-join/leave (multiple process on the same node)
+ * (not implemented yet, covered with simple tests) start/stop spg scope
  
 Properties:
  * process group contains only accessible pids
@@ -42,18 +43,13 @@ Implementation
 Relies on message ordering done by Erlang distribution. All exchanges are happening only between
 corresponding spg gen_server processes.
 
-Compatibility
--------------
-Protocol is not compatible with OTP pg2 module. Additional work is
-required to make it work in a single cluster.
-
 Feature requests
 ----------------
 Next releases are going to contain:
- * multi-join/leave: multiple processes joining a group or leaving a group
  * customisation for which_groups() to return groups sorted (using ordered_set internally)
  * group membership changes notifications
- * (debatable) completely empty groups (for drop-in pg2 compatibility), and a concept of 'group owner'
+ * (debatable) empty groups (for drop-in pg2 compatibility)
+ * (debatable) concept of 'group ownership' for garbage-collecting empty groups
 
 
 Changelog

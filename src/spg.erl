@@ -54,7 +54,6 @@
 
 %% API: scoped version for improved concurrency
 -export([
-    start/1,
     start_link/1,
 
     join/3,
@@ -87,12 +86,6 @@
 -spec start_link() -> {ok, pid()} | {error, any()}.
 start_link() ->
     start_link(?DEFAULT_SCOPE).
-
-%% @doc
-%% Starts the server, not supervised.
--spec start(Scope :: atom()) -> {ok, pid()} | {error, any()}.
-start(Scope) when is_atom(Scope) ->
-    gen_server:start({local, Scope}, ?MODULE, [Scope], []).
 
 %% @doc
 %% Starts the server and links it to calling process.

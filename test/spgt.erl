@@ -13,6 +13,8 @@
     spawn/0,
     spawn/1,
     stop_proc/1,
+    start_scope/1,
+    stop_scope/1,
     rpc/4,
     spawn_node/2,
     stop_node/2
@@ -36,6 +38,18 @@ spawn() ->
 spawn(Node) ->
     erlang:spawn(Node, forever()).
 
+%% @doc
+%% Starts the server, not supervised.
+-spec start_scope(Scope :: atom()) -> {ok, pid()} | {error, any()}.
+start_scope(Scope) when is_atom(Scope) ->
+    gen_server:start({local, Scope}, spg, [Scope], []).
+
+%% @doc
+%% Stops the unsupervised server.
+-spec stop_scope(Scope :: atom()) -> {ok, pid()} | {error, any()}.
+stop_scope(Scope) when is_atom(Scope) ->
+    gen_server:stop(Scope).
+
 %% @doc Kills process Pid and waits for it to exit using monitor,
 %%      and yields after (for 1 ms).
 -spec stop_proc(pid()) -> ok.
@@ -56,8 +70,12 @@ rpc(Sock, M, F, A) ->
     inet:setopts(Sock, [{active, once}]),
     receive
         {tcp, Sock, Data} ->
-            {reply, Ret} = binary_to_term(Data),
-            Ret;
+            case binary_to_term(Data) of
+                {ok, Val} ->
+                    Val;
+                {error, Error} ->
+                    {badrpc, Error}
+            end;
         {tcp_closed, Sock} ->
             error(closed)
     end.
@@ -132,7 +150,7 @@ control(Scope) ->
 
 server(Control, Scope) ->
     try
-        {ok, Pid} = spg:start(Scope),
+        {ok, Pid} = spgt:start_scope(Scope),
         {ok, Listen} = gen_tcp:listen(0, [{mode, binary}, {packet, 4}, {ip, ?LOCALHOST}]),
         {ok, Port} = inet:port(Listen),
         Control ! {port, Port, Pid},
@@ -148,8 +166,18 @@ server_loop(Sock) ->
     receive
         {tcp, Sock, Data} ->
             {call, M, F, A} = binary_to_term(Data),
-            Ret = (catch erlang:apply(M, F, A)),
-            ok = gen_tcp:send(Sock, term_to_binary({reply, Ret})),
+            Ret =
+                try
+                    erlang:apply(M, F, A) of
+                    Res ->
+                        {ok, Res}
+                catch
+                    exit:Reason ->
+                        {error, {'EXIT', Reason}};
+                    error:Reason ->
+                        {error, {'EXIT', Reason}}
+                end,
+            ok = gen_tcp:send(Sock, term_to_binary(Ret)),
             server_loop(Sock);
         {tcp_closed, Sock} ->
             erlang:halt(1)

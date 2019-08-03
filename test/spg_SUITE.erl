@@ -82,9 +82,12 @@ spg(_Config) ->
     ?assertMatch({error, _}, spg:start_link()),
     ?assertEqual(ok, spg:join(?FUNCTION_NAME, self())),
     ?assertEqual([self()], spg:get_local_members(?FUNCTION_NAME)),
+    ?assertEqual([?FUNCTION_NAME], spg:which_groups(?FUNCTION_NAME)),
+    ?assertEqual([?FUNCTION_NAME], spg:which_local_groups(?FUNCTION_NAME)),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, self())),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME)),
-    ?assertEqual([], spg:which_groups()).
+    ?assertEqual([], spg:which_groups(?FUNCTION_NAME)),
+    ?assertEqual([], spg:which_local_groups(?FUNCTION_NAME)).
 
 app() ->
     [{doc, "Tests application start/stop functioning, supervision & scopes"}].

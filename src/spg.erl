@@ -49,7 +49,8 @@
     leave/2,
     get_members/1,
     get_local_members/1,
-    which_groups/0
+    which_groups/0,
+    which_local_groups/0
 ]).
 
 %% API: scoped version for improved concurrency
@@ -60,7 +61,8 @@
     leave/3,
     get_members/2,
     get_local_members/2,
-    which_groups/1
+    which_groups/1,
+    which_local_groups/1
 ]).
 
 %%% gen_server exports
@@ -156,6 +158,14 @@ which_groups() ->
 -spec which_groups(Scope :: atom()) -> [Group :: group()].
 which_groups(Scope) when is_atom(Scope) ->
     [G || [G] <- ets:match(Scope, {'$1', '_', '_'})].
+
+-spec which_local_groups() -> [Group :: group()].
+which_local_groups() ->
+    which_local_groups(?DEFAULT_SCOPE).
+
+-spec which_local_groups(Scope :: atom()) -> [Group :: group()].
+which_local_groups(Scope) when is_atom(Scope) ->
+    ets:select(Scope, [{{'$1', '_', '$2'}, [{'=/=', '$2', []}], ['$1']}]).
 
 %%--------------------------------------------------------------------
 %% Internal implementation

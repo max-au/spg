@@ -41,13 +41,13 @@ spawn(Node) ->
 %% @doc
 %% Starts the server, not supervised.
 -spec start_scope(Scope :: atom()) -> {ok, pid()} | {error, any()}.
-start_scope(Scope) when is_atom(Scope) ->
+start_scope(Scope) when is_atom(Scope), Scope =/= undefined ->
     gen_server:start({local, Scope}, spg, [Scope], []).
 
 %% @doc
 %% Stops the unsupervised server.
 -spec stop_scope(Scope :: atom()) -> {ok, pid()} | {error, any()}.
-stop_scope(Scope) when is_atom(Scope) ->
+stop_scope(Scope) when is_atom(Scope), Scope =/= undefined ->
     gen_server:stop(Scope).
 
 %% @doc Kills process Pid and waits for it to exit using monitor,
@@ -150,7 +150,7 @@ control(Scope) ->
 
 server(Control, Scope) ->
     try
-        {ok, Pid} = spgt:start_scope(Scope),
+        {ok, Pid} = if Scope =:= undefined -> {ok, undefined}; true -> spgt:start_scope(Scope) end,
         {ok, Listen} = gen_tcp:listen(0, [{mode, binary}, {packet, 4}, {ip, ?LOCALHOST}]),
         {ok, Port} = inet:port(Listen),
         Control ! {port, Port, Pid},

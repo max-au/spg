@@ -186,7 +186,7 @@ which_local_groups(Scope) when is_atom(Scope) ->
 init([Scope]) ->
     ok = net_kernel:monitor_nodes(true),
     % discover all nodes in the cluster
-    broadcast(Scope, {discover, self()}),
+    broadcast([{Scope, Node} || Node <- nodes()], {discover, self()}),
     Scope = ets:new(Scope, [set, protected, named_table, {read_concurrency, true}]),
     {ok, #state{scope = Scope}}.
 
@@ -195,16 +195,16 @@ init([Scope]) ->
                   From :: {pid(),Tag :: any()},
                   State :: state()) -> {reply, ok, state()}.
 
-handle_call({join_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
+handle_call({join_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors, nodes = Nodes} = State) ->
     NewMons = join_monitors(PidOrPids, Group, Monitors),
     join_local_group(Scope, Group, PidOrPids),
-    broadcast(Scope, {join, Group, PidOrPids}),
+    broadcast(maps:keys(Nodes), {join, Group, PidOrPids}),
     {reply, ok, State#state{monitors = NewMons}};
 
-handle_call({leave_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors} = State) ->
+handle_call({leave_local, Group, PidOrPids}, _From, #state{scope = Scope, monitors = Monitors, nodes = Nodes} = State) ->
     NewMons = leave_monitors(PidOrPids, Group, Monitors),
     leave_local_group(Scope, Group, PidOrPids),
-    broadcast(Scope, {leave, PidOrPids, [Group]}),
+    broadcast(maps:keys(Nodes), {leave, PidOrPids, [Group]}),
     {reply, ok, State#state{monitors = NewMons}};
 
 handle_call(_Request, _From, _S) ->
@@ -252,11 +252,11 @@ handle_cast(_, _State) ->
                   {nodeup, node()}, State :: state()) -> {noreply, state()}.
 
 % handle local process exit
-handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors = Monitors} = State) when node(Pid) =:= node() ->
+handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors = Monitors, nodes = Nodes} = State) when node(Pid) =:= node() ->
     {{MRef, Groups}, NewMons} = maps:take(Pid, Monitors),
     [leave_local_group(Scope, Group, Pid) || Group <- Groups],
     % send update to all nodes
-    broadcast(Scope, {leave, Pid, Groups}),
+    broadcast(maps:keys(Nodes), {leave, Pid, Groups}),
     {noreply, State#state{monitors = NewMons}};
 
 % handle remote node down or leaving overlay network
@@ -448,13 +448,13 @@ all_local_pids(Scope) ->
     ets:select(Scope, [{{'$1','_','$2'},[{'=/=','$2',[]}],[{{'$1','$2'}}]}]).
 
 % Replacement for gen_server:abcast with 'noconnect' flag set.
-broadcast(Scope, Msg) ->
-    do_broadcast(nodes(), Scope, {'$gen_cast', Msg}).
+broadcast(Pids, Msg) ->
+    do_broadcast(Pids, {'$gen_cast', Msg}).
 
-do_broadcast([], _Scope, _Msg) ->
+do_broadcast([], _Msg) ->
     ok;
-do_broadcast([Node | Tail], Scope, Msg) ->
+do_broadcast([Dest | Tail], Msg) ->
     % do not use 'nosuspend' here, as it will lead to missing
     %   join/leave messages when dist buffer is full
-    erlang:send({Scope, Node}, Msg, [noconnect]),
-    do_broadcast(Tail, Scope, Msg).
+    erlang:send(Dest, Msg, [noconnect]),
+    do_broadcast(Tail, Msg).

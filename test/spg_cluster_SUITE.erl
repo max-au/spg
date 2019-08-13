@@ -402,11 +402,12 @@ prop_spg_no_crash(Config) when is_list(Config) ->
                 % kill processes
                 #{Name := #node{procs = Procs}} = State,
                 [exit(P, kill) || P <- maps:keys(Procs)],
-                % stop pgs server
+                % stop spg server
                 whereis(?PROPER_SERVER) =/= undefined andalso gen_server:stop(?PROPER_SERVER),
                 % close sockets & stop controlling procs
                 [spgt:stop_node(N, Sock) ||
                     {N, #node{up = true, socket = Sock}} <- maps:to_list(State), Name =/= N],
+                test_server_ctrl:kill_slavenodes(),
                 % check no slaves are still running
                 [] = ets:match_object(slave_tab,'_'),
                 rand:uniform(80) =:= 80 andalso io:fwrite(user, "\n", []),

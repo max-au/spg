@@ -246,7 +246,7 @@ handle_cast({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Node
                 Existing when is_pid(PidOrPids) ->
                     Acc#{Group => lists:delete(PidOrPids, Existing)};
                 Existing ->
-                    Acc#{Group => (PidOrPids -- Existing)}
+                    Acc#{Group => Existing-- PidOrPids}
             end
         end, RemoteMap, Groups),
     {noreply, State#state{nodes = Nodes#{Peer => {MRef, NewRemoteMap}}}};
@@ -319,24 +319,25 @@ handle_sync(Scope, Peer, Nodes, Groups) ->
                 MRef0
         end,
     % sync RemoteMap and transform ETS table
-    NewRemoteGroups = sync_groups(Scope, RemoteGroups, Groups),
-    Nodes#{Peer => {MRef, NewRemoteGroups}}.
+    sync_groups(Scope, RemoteGroups, Groups),
+    Nodes#{Peer => {MRef, maps:from_list(Groups)}}.
 
-sync_groups(_Scope, RemoteGroups, []) ->
-    RemoteGroups;
+sync_groups(Scope, RemoteGroups, []) ->
+    % leave all missing groups
+    [leave_remote(Scope, Pids, [Group]) || {Group, Pids} <- maps:to_list(RemoteGroups)];
 sync_groups(Scope, RemoteGroups, [{Group, Pids} | Tail]) ->
-    case maps:find(Group, RemoteGroups) of
-        {ok, Pids} ->
-            sync_groups(Scope, RemoteGroups, Tail);
-        {ok, OldPids} ->
-            [{Group, AllOldPids, LocalPids}] = ets:lookup_element(Scope, Group, 2),
+    case maps:take(Group, RemoteGroups) of
+        {Pids, NewRemoteGroups} ->
+            sync_groups(Scope, NewRemoteGroups, Tail);
+        {OldPids, NewRemoteGroups} ->
+            [{Group, AllOldPids, LocalPids}] = ets:lookup(Scope, Group),
             % should be really rare...
             AllNewPids = Pids ++ AllOldPids -- OldPids,
             true = ets:insert(Scope, {Group, AllNewPids, LocalPids}),
-            sync_groups(Scope, RemoteGroups#{Group => Pids}, Tail);
+            sync_groups(Scope, NewRemoteGroups, Tail);
         error ->
             join_remote(Scope, Group, Pids),
-            sync_groups(Scope, RemoteGroups#{Group => Pids}, Tail)
+            sync_groups(Scope, RemoteGroups, Tail)
     end.
 
 join_monitors(Pid, Group, Monitors) when is_pid(Pid) ->

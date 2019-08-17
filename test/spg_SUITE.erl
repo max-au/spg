@@ -35,7 +35,9 @@
     double/1,
     scope_restart/1,
     missing_scope_join/1,
-    disconnected_start/1
+    disconnected_start/1,
+    forced_sync/0, forced_sync/1,
+    group_leave/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -58,14 +60,15 @@ end_per_testcase(TestCase, _Config) ->
     ok.
 
 all() ->
-    [app, {group, basic}, {group, cluster}].
+    [app, {group, basic}, {group, cluster}, {group, performance}].
 
 groups() -> 
     [
         {basic, [parallel], [errors, spg, single, pg2]},
-        {cluster, [sequential], [thundering_herd, two, initial, netsplit, trisplit, foursplit,
+        {performance, [sequential], [thundering_herd]},
+        {cluster, [parallel], [two, initial, netsplit, trisplit, foursplit,
             exchange, nolocal, double, scope_restart, missing_scope_join,
-            disconnected_start]}
+            disconnected_start, forced_sync, group_leave]}
     ].
 
 
@@ -83,12 +86,12 @@ spg(_Config) ->
     ?assertMatch({error, _}, spg:start_link()),
     ?assertEqual(ok, spg:join(?FUNCTION_NAME, self())),
     ?assertEqual([self()], spg:get_local_members(?FUNCTION_NAME)),
-    ?assertEqual([?FUNCTION_NAME], spg:which_groups(?FUNCTION_NAME)),
-    ?assertEqual([?FUNCTION_NAME], spg:which_local_groups(?FUNCTION_NAME)),
+    ?assertEqual([?FUNCTION_NAME], spg:which_groups()),
+    ?assertEqual([?FUNCTION_NAME], spg:which_local_groups()),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, self())),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME)),
-    ?assertEqual([], spg:which_groups(?FUNCTION_NAME)),
-    ?assertEqual([], spg:which_local_groups(?FUNCTION_NAME)).
+    ?assertEqual([], spg:which_groups()),
+    ?assertEqual([], spg:which_local_groups()).
 
 app() ->
     [{doc, "Tests application start/stop functioning, supervision & scopes"}].
@@ -278,7 +281,7 @@ trisplit(Config) when is_list(Config) ->
     ?assertEqual(true, net_kernel:connect_node(Peer)),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, one, PeerPid2])),
     % now ensure sync happened
-    {Peer2, Socket2} = spgt:spawn_node(?FUNCTION_NAME, second),
+    {Peer2, Socket2} = spgt:spawn_node(?FUNCTION_NAME, trisplit_second),
     ?assertEqual(true, rpc:call(Peer2, net_kernel, connect_node, [Peer])),
     ?assertEqual(lists:sort([node(), Peer]), lists:sort(rpc:call(Peer2, erlang, nodes, []))),
     sync({?FUNCTION_NAME, Peer2}),
@@ -306,7 +309,7 @@ foursplit(Config) when is_list(Config) ->
 
 exchange(Config) when is_list(Config) ->
     {Peer1, Socket1} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
-    {Peer2, Socket2} = spgt:spawn_node(?FUNCTION_NAME, second),
+    {Peer2, Socket2} = spgt:spawn_node(?FUNCTION_NAME, exchange_second),
     Pids10 = [spgt:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
     Pids2 = [spgt:rpc(Socket2, spgt, spawn, []) || _ <- lists:seq(1, 10)],
     Pids11 = [spgt:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
@@ -419,4 +422,69 @@ disconnected_start(Config) when is_list(Config) ->
     RemotePid = spgt:rpc(Socket, spgt, spawn, []),
     ?assert(is_pid(RemotePid)),
     spgt:stop_node(Peer, Socket),
+    ok.
+
+forced_sync() ->
+    [{doc, "This test was added when lookup_element was erroneously used instead of lookup, crashing spg with badmatch, and it tests rare out-of-order sync operations"}].
+
+forced_sync(Config) when is_list(Config) ->
+    {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
+    Pid = spgt:spawn(),
+    RemotePid = spgt:spawn(Peer),
+    Expected = lists:sort([Pid, RemotePid]),
+    spg:join(?FUNCTION_NAME, one, Pid),
+    %
+    ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, one, RemotePid])),
+    RemoteScopePid = rpc:call(Peer, erlang, whereis, [?FUNCTION_NAME]),
+    ?assert(is_pid(RemoteScopePid)),
+    % hohoho, partition!
+    erlang:disconnect_node(Peer),
+    % OTP thing - has to sleep...
+    timer:sleep(5),
+    ?assertEqual(true, net_kernel:connect_node(Peer)),
+    % now ensure sync happened
+    sync({?FUNCTION_NAME, Peer}),
+    sync(?FUNCTION_NAME),
+    ?assertEqual(Expected, lists:sort(spg:get_members(?FUNCTION_NAME, one))),
+    % WARNING: this code uses spg as white-box, exploiting internals,
+    %  only to simulate broken 'sync'
+    % Fake Groups: one should disappear, one should be replaced, one stays
+    % This tests handle_sync function.
+    FakeGroups = [{one, [RemotePid, RemotePid]}, {?FUNCTION_NAME, [RemotePid, RemotePid]}],
+    gen_server:cast(?FUNCTION_NAME, {sync, RemoteScopePid, FakeGroups}),
+    % ensure it is broken well enough
+    sync(?FUNCTION_NAME),
+    ?assertEqual(lists:sort([RemotePid, RemotePid]), lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
+    ?assertEqual(lists:sort([RemotePid, RemotePid, Pid]), lists:sort(spg:get_members(?FUNCTION_NAME, one))),
+    % simulate force-sync via 'discover' - ask peer to send sync to us
+    gen_server:cast({?FUNCTION_NAME, Peer}, {discover, whereis(?FUNCTION_NAME)}),
+    sync({?FUNCTION_NAME, Peer}),
+    sync(?FUNCTION_NAME),
+    ?assertEqual(Expected, lists:sort(spg:get_members(?FUNCTION_NAME, one))),
+    ?assertEqual([], lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
+    % and simulate extra sync
+    sync({?FUNCTION_NAME, Peer}),
+    sync(?FUNCTION_NAME),
+    ?assertEqual(Expected, lists:sort(spg:get_members(?FUNCTION_NAME, one))),
+    %
+    spgt:stop_node(Peer, Socket),
+    ok.
+
+group_leave(Config) when is_list(Config) ->
+    {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
+    RemotePid = spgt:spawn(Peer),
+    Total = lists:duplicate(16, RemotePid),
+    {Left, Remain} = lists:split(4, Total),
+    % join 16 times!
+    ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, two, Total])),
+    ?assertEqual(ok, rpc:call(Peer, spg, leave, [?FUNCTION_NAME, two, Left])),
+    %
+    sync({?FUNCTION_NAME, Peer}),
+    sync(?FUNCTION_NAME),
+    ?assertEqual(Remain, spg:get_members(?FUNCTION_NAME, two)),
+    %
+    spgt:stop_node(Peer, Socket),
+    %
+    sync(?FUNCTION_NAME),
+    ?assertEqual([], spg:get_members(?FUNCTION_NAME, two)),
     ok.

@@ -24,7 +24,6 @@
     errors/0, errors/1,
     single/0, single/1,
     two/1,
-    pg2/0, pg2/1,
     thundering_herd/0, thundering_herd/1,
     initial/1,
     netsplit/1,
@@ -64,17 +63,12 @@ all() ->
 
 groups() -> 
     [
-        {basic, [parallel], [errors, spg, single, pg2]},
+        {basic, [parallel], [errors, spg, single]},
         {performance, [sequential], [thundering_herd]},
         {cluster, [parallel], [two, initial, netsplit, trisplit, foursplit,
             exchange, nolocal, double, scope_restart, missing_scope_join,
             disconnected_start, forced_sync, group_leave]}
     ].
-
-
--define (do(What, Expect), ?assertEqual(Expect, spg:What(?FUNCTION_NAME))).
--define (do(What, Arg, Expect), ?assertEqual(Expect, spg:What(?FUNCTION_NAME, Arg))).
--define (do(What, Arg1, Arg2, Expect), ?assertEqual(Expect, spg:What(?FUNCTION_NAME, Arg1, Arg2))).
 
 sync(GS) ->
     _ = sys:log(GS, get).
@@ -90,8 +84,8 @@ spg(_Config) ->
     ?assertEqual([?FUNCTION_NAME], spg:which_local_groups()),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, self())),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME)),
-    ?assertEqual([], spg:which_groups()),
-    ?assertEqual([], spg:which_local_groups()).
+    ?assertEqual([], spg:which_groups(?FUNCTION_NAME)),
+    ?assertEqual([], spg:which_local_groups(?FUNCTION_NAME)).
 
 app() ->
     [{doc, "Tests application start/stop functioning, supervision & scopes"}].
@@ -130,40 +124,35 @@ single() ->
     [{doc, "Tests single node groups"}, {timetrap, {seconds, 5}}].
 
 single(Config) when is_list(Config) ->
-    ?do(which_groups, []),
-    ?do(get_local_members, ?FUNCTION_NAME, []),
-    ?do(get_members, ?FUNCTION_NAME, []),
-    ?do(join, ?FUNCTION_NAME, self(), ok),
-    ?do(join, ?FUNCTION_NAME, [self(), self()], ok),
-    ?do(get_local_members, ?FUNCTION_NAME, [self(), self(), self()]),
-    ?do(get_members, ?FUNCTION_NAME, [self(), self(), self()]),
-    ?do(leave, '$missing$', self(), not_joined),
-    ?do(leave, ?FUNCTION_NAME, [self(), self()], ok),
-    ?do(leave, ?FUNCTION_NAME, self(), ok),
-    ?do(which_groups, []),
-    ?do(get_local_members, ?FUNCTION_NAME, []),
-    ?do(get_members, ?FUNCTION_NAME, []),
-    %
-    ?do(join, ?FUNCTION_NAME, [self(), self()], ok),
-    ?do(leave, ?FUNCTION_NAME, [self(), self()], ok),
-    ?do(get_members, ?FUNCTION_NAME, []),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [self(), self()])),
+    ?assertEqual([self(), self(), self()], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    ?assertEqual([self(), self(), self()], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    ?assertEqual(not_joined, spg:leave(?FUNCTION_NAME, '$missing$', self())),
+    ?assertEqual(ok, spg:leave(?FUNCTION_NAME, ?FUNCTION_NAME, [self(), self()])),
+    ?assertEqual(ok, spg:leave(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
+    ?assertEqual([], spg:which_groups(?FUNCTION_NAME)),
+    ?assertEqual([], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     % double
-    ?do(join, ?FUNCTION_NAME, self(), ok),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
     Pid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, Pid, ok),
-    ?assertEqual(lists:sort([Pid, self()]), lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
-    ?assertEqual(lists:sort([Pid, self()]), lists:sort(spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, Pid)),
+    Expected = lists:sort([Pid, self()]),
+    ?assertEqual(Expected, lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
+    ?assertEqual(Expected, lists:sort(spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
     %
     spgt:stop_proc(Pid),
     sync(?FUNCTION_NAME),
     ?assertEqual([self()], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
+    ?assertEqual(ok, spg:leave(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
     ok.
 
 two(Config) when is_list(Config) ->
     {TwoPeer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
     Pid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, Pid, ok),
-    ?do(get_local_members, ?FUNCTION_NAME, [Pid]),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, Pid)),
+    ?assertEqual([Pid], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     % first RPC must be serialised
     sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([Pid], rpc:call(TwoPeer, spg, get_members, [?FUNCTION_NAME, ?FUNCTION_NAME])),
@@ -189,23 +178,6 @@ two(Config) when is_list(Config) ->
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     ok.
 
-pg2() ->
-    [{doc, "Supposed to test pg2 compatibility, but since it is missing, test is just doing a few calls"}].
-
-pg2(Config) when is_list(Config) ->
-    ?do(which_groups, []),
-    ?do(get_local_members, ?FUNCTION_NAME, []),
-    ?do(get_members, ?FUNCTION_NAME, []),
-    ?do(join, ?FUNCTION_NAME, self(), ok),
-    ?do(get_local_members, ?FUNCTION_NAME, [self()]),
-    ?do(get_members, ?FUNCTION_NAME, [self()]),
-    ?do(leave, ?FUNCTION_NAME, self(), ok),
-    ?do(leave, ?FUNCTION_NAME, self(), not_joined),
-    ?do(which_groups, []),
-    ?do(get_local_members, ?FUNCTION_NAME, []),
-    ?do(get_members, ?FUNCTION_NAME, []),
-    ok.
-
 thundering_herd() ->
     [{doc, "Thousands of overlay network nodes sending sync to us, and we time out!"}, {timetrap, {seconds, 5}}].
 
@@ -227,8 +199,8 @@ thundering_herd(Config) when is_list(Config) ->
 
 initial(Config) when is_list(Config) ->
     Pid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, Pid, ok),
-    ?do(get_local_members, ?FUNCTION_NAME, [Pid]),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, Pid)),
+    ?assertEqual([Pid], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
     % first RPC must be serialised
     sync({?FUNCTION_NAME, Peer}),
@@ -258,7 +230,7 @@ netsplit(Config) when is_list(Config) ->
     ?assertEqual([RemoteOldPid], spgt:rpc(Socket, spg, get_local_members, [?FUNCTION_NAME, '$visible'])),
     % join locally too
     LocalPid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, LocalPid, ok),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, LocalPid)),
     %
     ?assertNot(lists:member(Peer, nodes())), % should be no nodes in the cluster
     %
@@ -375,9 +347,9 @@ nolocal(Config) when is_list(Config) ->
 
 double(Config) when is_list(Config) ->
     Pid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, Pid, ok),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, Pid)),
     {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
-    ?do(join, ?FUNCTION_NAME, [Pid], ok),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [Pid])),
     ?assertEqual([Pid, Pid], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     sync(?FUNCTION_NAME),
     sync({?FUNCTION_NAME, Peer}),
@@ -387,7 +359,7 @@ double(Config) when is_list(Config) ->
 
 scope_restart(Config) when is_list(Config) ->
     Pid = spgt:spawn(),
-    ?do(join, ?FUNCTION_NAME, [Pid, Pid], ok),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, [Pid, Pid])),
     {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
     RemotePid = spgt:spawn(Peer),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),

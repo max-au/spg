@@ -95,16 +95,6 @@ stop_proc(Access, Pid) ->
     impl(Access, spgt, stop_proc, [Pid]).
 
 connect_peer(Access, NodeTwo) ->
-    %true = connect_peer(Access, To, connect_peer_impl(Access, NodeTwo), 5).
-
-%connect_peer(_Access, _To, true, _) ->
-%    true;
-%connect_peer(Access, To, false, 1) ->
-%    connect_peer_impl(Access, To);
-%connect_peer(Access, To, false, Retry) ->
-%    connect_peer(Access, To, connect_peer_impl(Access, To), Retry - 1).
-
-%connect_peer_impl(Access, NodeTwo) ->
     impl(Access, net_kernel, connect_node, [NodeTwo]).
 
 disconnect_peer(Access, NodeTwo) ->
@@ -184,7 +174,7 @@ test_scope_up(State, Name, Res) ->
         {false, {'EXIT', {noproc, _}}} ->
             true;
         _ ->
-            % erlang:display({"Error", Name, Res, ScopeUp}),
+            erlang:display({"Postcondition error: ", Name, "Result ", Res, "Scope Up: ", ScopeUp}),
             false
     end.
 
@@ -426,7 +416,7 @@ prop_spg_no_crash(Config) when is_list(Config) ->
             end)).
 
 spg_proper_check() ->
-    [{doc, "PropEr tests for spg module, long, 2 hours timeout"}, {timetrap, {seconds, 240 * 60}}].
+    [{doc, "PropEr tests for spg module, long, 24 hours timeout"}, {timetrap, {hours, 24}}].
 
 spg_proper_check(Config) ->
-    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 20000}, {to_file, user}]).
+    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 200000}, {to_file, user}]).

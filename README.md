@@ -33,7 +33,7 @@ process owner node.
    broadcast ```{discover, self()}``` to this spg scope on all nodes()
 2. handle discover request:  
    monitor requesting process  
-   respond with ```{sync, [{Group, LocalPids}]}```
+   respond with ```{sync, self(), [{Group, LocalPids}]}```
 3. handle monitor ‘DOWN’ for remote spg scope process:  
    remove all processes from disconnected scope
 4. handle ‘nodeup’: send ```{discover, self()}``` to spg scope of a joined node
@@ -47,6 +47,8 @@ overlay network.
 
 Handling remote spg scope ‘DOWN’ includes removal of all processes 
 owned by remote node from the scope.
+
+Join/leave operations contain originating scope process
 
 
 Relies on message ordering done by Erlang distribution. All exchanges are happening only between
@@ -104,13 +106,22 @@ Properties:
 Next releases are going to contain:
  * alternative process registry support
  * customisation for which_groups() to return groups sorted (using ordered_set internally)
- * group membership change notifications
  * delayed spg scope ‘DOWN’ processing to tolerate short network disruptions
  * alternative service discovery integration 
  * region-aware scoping
  * (optional) empty groups (for drop-in pg2 compatibility)
-
+ * separate in/out queues for remote join/leave casts for improved performance
+ * periodic sync (automatic healing)
+ * ability to survive scope process restart
+ * non-process values
+ * speed up stateful property testing
+ * concurrent property testing mechanism
+ * more benhmarks!
 
 ## Changelog
+Version 1.1.0:
+ - speed up initial sync at the expense of leave/join operations
+ - return not_joined for leave_group if process has not joined the group before
+
 Version 1.0.0:
  - initial release

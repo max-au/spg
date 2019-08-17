@@ -25,6 +25,7 @@
     single/0, single/1,
     two/1,
     pg2/0, pg2/1,
+    thundering_herd/0, thundering_herd/1,
     initial/1,
     netsplit/1,
     trisplit/1,
@@ -62,7 +63,7 @@ all() ->
 groups() -> 
     [
         {basic, [parallel], [errors, spg, single, pg2]},
-        {cluster, [sequential], [two, initial, netsplit, trisplit, foursplit,
+        {cluster, [sequential], [thundering_herd, two, initial, netsplit, trisplit, foursplit,
             exchange, nolocal, double, scope_restart, missing_scope_join,
             disconnected_start]}
     ].
@@ -133,7 +134,7 @@ single(Config) when is_list(Config) ->
     ?do(join, ?FUNCTION_NAME, [self(), self()], ok),
     ?do(get_local_members, ?FUNCTION_NAME, [self(), self(), self()]),
     ?do(get_members, ?FUNCTION_NAME, [self(), self(), self()]),
-    ?do(leave, '$missing$', self(), ok),
+    ?do(leave, '$missing$', self(), not_joined),
     ?do(leave, ?FUNCTION_NAME, [self(), self()], ok),
     ?do(leave, ?FUNCTION_NAME, self(), ok),
     ?do(which_groups, []),
@@ -196,11 +197,30 @@ pg2(Config) when is_list(Config) ->
     ?do(get_local_members, ?FUNCTION_NAME, [self()]),
     ?do(get_members, ?FUNCTION_NAME, [self()]),
     ?do(leave, ?FUNCTION_NAME, self(), ok),
-    ?do(leave, ?FUNCTION_NAME, self(), ok),
+    ?do(leave, ?FUNCTION_NAME, self(), not_joined),
     ?do(which_groups, []),
     ?do(get_local_members, ?FUNCTION_NAME, []),
     ?do(get_members, ?FUNCTION_NAME, []),
     ok.
+
+thundering_herd() ->
+    [{doc, "Thousands of overlay network nodes sending sync to us, and we time out!"}, {timetrap, {seconds, 5}}].
+
+thundering_herd(Config) when is_list(Config) ->
+    GroupCount = 10000,
+    SyncCount = 2000,
+    % make up a large amount of groups
+    [spg:join(?FUNCTION_NAME, {group, Seq}, self()) || Seq <- lists:seq(1, GroupCount)],
+    % initiate a few syncs - and those are really slow...
+    {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
+    PeerPid = spgt:spawn(Peer),
+    PeerSpg = rpc:call(Peer, erlang, whereis, [?FUNCTION_NAME], 1000),
+    %% WARNING: code below acts for white-box! %% WARNING
+    FakeSync = [{{group, 1}, [PeerPid, PeerPid]}],
+    [gen_server:cast(?FUNCTION_NAME, {sync, PeerSpg, FakeSync}) || _ <- lists:seq(1, SyncCount)],
+    % next call must not timetrap, otherwise test fails
+    spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self()),
+    spgt:stop_node(Peer, Socket).
 
 initial(Config) when is_list(Config) ->
     Pid = spgt:spawn(),
@@ -274,10 +294,10 @@ foursplit(Config) when is_list(Config) ->
     ?assertEqual(ok, spg:join(?FUNCTION_NAME, two, Pid)),
     PeerPid1 = spgt:spawn(Peer),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, one, Pid)),
-    ?assertEqual(ok, spg:leave(?FUNCTION_NAME, three, Pid)),
+    ?assertEqual(not_joined, spg:leave(?FUNCTION_NAME, three, Pid)),
     erlang:disconnect_node(Peer),
     ?assertEqual(ok, spgt:rpc(Socket, spgt, stop_proc, [PeerPid1])),
-    ?assertEqual(ok, spg:leave(?FUNCTION_NAME, three, Pid)),
+    ?assertEqual(not_joined, spg:leave(?FUNCTION_NAME, three, Pid)),
     ?assertEqual(true, net_kernel:connect_node(Peer)),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, one)),
     ?assertEqual([], spgt:rpc(Socket, spg, get_members, [?FUNCTION_NAME, one])),
@@ -329,7 +349,7 @@ exchange(Config) when is_list(Config) ->
     sync({?FUNCTION_NAME, Peer1}),
     sync(?FUNCTION_NAME),
     ?assertEqual(lists:sort(Stay), lists:sort(spg:get_members(?FUNCTION_NAME, third))),
-    ?assertEqual(ok, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, left, Stay])),
+    ?assertEqual(not_joined, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, left, Stay])),
     ?assertEqual(ok, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, third, Stay])),
     sync({?FUNCTION_NAME, Peer1}),
     sync(?FUNCTION_NAME),

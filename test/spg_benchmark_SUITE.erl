@@ -21,7 +21,8 @@
     global/0, global/1,
     pg2/0, pg2/1,
     spg/0, spg/1,
-    syn/0, syn/1
+    syn/0, syn/1,
+    cpg/0, cpg/1
 ]).
 
 %% Exports for RPC calls
@@ -43,11 +44,11 @@ end_per_testcase(_TestCase, _Config) ->
     test_server_ctrl:kill_slavenodes().
 
 all() ->
-    % [global, pg2, spg, syn],
+    % [global, pg2, spg, syn, cpg],
     [spg, syn].
 
 %%--------------------------------------------------------------------
-%% SYN:
+%% Benchmarking helpers
 
 start_nodes(Count, Scope) ->
     NodeNames = [list_to_atom("node_" ++ integer_to_list(Seq)) || Seq <- lists:seq(1, Count - 1)],
@@ -141,6 +142,24 @@ syn_whereis(Name) ->
 
 syn_funs() ->
     {"syn", fun syn_prepare/1, fun syn_register/2, fun syn_unregister/2, fun syn_whereis/1}.
+
+cpg_prepare(_Name) ->
+    ok.
+
+cpg_register(Name, Pid) ->
+    ok = cpg:join(Name, Pid).
+
+cpg_unregister(Name, Pid) ->
+    ok = cpg:leave(Name, Pid).
+
+cpg_whereis(Name) ->
+    cpg:whereis_name(Name).
+
+cpg_funs() ->
+    {"cpg", fun cpg_prepare/1, fun cpg_register/2, fun cpg_unregister/2, fun cpg_whereis/1}.
+
+%%--------------------------------------------------------------------
+%% Runner
 
 clean_pids_table(Tab, undefined) ->
     Tab = ets:new(Tab, [public, named_table, {heir, whereis(kernel_safe_sup), silent}]);
@@ -283,3 +302,14 @@ syn(_Config) ->
     benchmark(syn_funs(), 10000),
     ?assertEqual({lists:duplicate(?NODE_COUNT, ok), []}, rpc:multicall(syn, stop, [])),
     ?assertEqual({lists:duplicate(?NODE_COUNT, stopped), []}, rpc:multicall(mnesia, stop, [])).
+
+cpg() ->
+    [{timetrap, {seconds, 120}}, {doc, "Benchmark for cpg"}].
+
+cpg(_Config) ->
+    start_nodes(?NODE_COUNT, ?FUNCTION_NAME),
+    Paths = [filename:dirname(code:which(App)) || App <- [cpg, quickrand, trie]],
+    ?assertEqual({lists:duplicate(?NODE_COUNT, ok), []}, rpc:multicall(code, add_paths, [Paths])),
+    ?assertMatch({_, []}, rpc:multicall(application, ensure_all_started, [cpg])),
+    benchmark(cpg_funs(), 1000),
+    ?assertEqual({lists:duplicate(?NODE_COUNT, true), []}, rpc:multicall(application, stop, [cpg])).

@@ -176,12 +176,15 @@ test_scope_up(State, Name, Res) ->
     case {ScopeUp, Res} of
         {true, ok} ->
             true;
+        {true, not_joined} ->
+            %% TODO: implement not_joined state for leave_group call
+            true;
         {false, {'EXIT', noproc}} ->
             true;
         {false, {'EXIT', {noproc, _}}} ->
             true;
         _ ->
-            erlang:display({"Error", Name, Res, ScopeUp}),
+            % erlang:display({"Error", Name, Res, ScopeUp}),
             false
     end.
 

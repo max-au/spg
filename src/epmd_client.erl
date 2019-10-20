@@ -29,7 +29,10 @@
     handle_info/2
 ]).
 
--export([log_append/2]).
+%% Internal export: should be used for debugging only
+-export([log/2]).
+
+-include_lib("kernel/include/logger.hrl").
 
 %% Allow up to 5 seconds for resolve
 -define (RESOLVE_TIMEOUT, 5000).
@@ -44,7 +47,6 @@
 -spec(start_link() ->
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
 start_link() ->
-    log_append("Starting ~p", [?MODULE]),
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 names() ->
@@ -58,7 +60,7 @@ register_node(Host, Port) ->
     register_node(Host, Port, inet).
 
 register_node(Host, Port, Driver) ->
-    log_append("Register: ~s:~p (~s)", [Host, Port, Driver]),
+    ?LOG_DEBUG("Register: ~s:~p (~s)", [Host, Port, Driver]),
     gen_server:call(?MODULE, {register, Host, Port, Driver}).
 
 -spec address_please(Name, Host, AddressFamily) -> Success | {error, term()} when
@@ -70,9 +72,9 @@ register_node(Host, Port, Driver) ->
     Success :: {ok, inet:ip_address()} | {ok, inet:ip_address(), Port, Version}.
 
 address_please(Name, Host, AddressFamily) ->
-    log_append("Address, please: ~s@~s (~s)", [Name, Host, AddressFamily]),
+    ?LOG_DEBUG("Address, please: ~s@~s (~s)", [Name, Host, AddressFamily]),
     A = gen_server:call(?MODULE, {resolve, {Name, Host, AddressFamily}, []}),
-    log_append("Your address: ~s@~s => ~120p", [Name, Host, A]),
+    ?LOG_DEBUG("Your address: ~s@~s => ~120p", [Name, Host, A]),
     A.
 
 -spec resolve(Name, Host, AddressFamily, Path) -> Success | {error, term()} when
@@ -85,7 +87,7 @@ address_please(Name, Host, AddressFamily) ->
 resolve(Name, Host, AddressFamily, Path) ->
     case list_to_atom(lists:concat([Name, "@", Host])) of
         Node when Node =:= node() ->
-            log_append("Requested self from ~120p", [Path]),
+            ?LOG_DEBUG("Requested self from ~120p", [Path]),
             % Hack: use net_kernel internal state knowledge to get a list of own addresses
             AllListeners = element(10, sys:get_state(net_kernel)),
             % find the one asked (tcp, and AddressFamily)
@@ -96,11 +98,11 @@ resolve(Name, Host, AddressFamily, Path) ->
         Node ->
             case lists:member(Node, nodes()) of
                 true ->
-                    log_append("Requested known node ~p from ~120p", [Node, Path]),
+                    ?LOG_DEBUG("Requested known node ~p from ~120p", [Node, Path]),
                     % ask node itself
                     rpc:call(Node, ?MODULE, resolve, [Name, Host, AddressFamily, [node() | Path]], ?RESOLVE_TIMEOUT);
                 false ->
-                    log_append("Resolve indirect: ~s@~s (~s, from ~120p)", [Name, Host, AddressFamily, Path]),
+                    ?LOG_DEBUG("Resolve indirect: ~s@~s (~s, from ~120p)", [Name, Host, AddressFamily, Path]),
                     case gen_server:call(?MODULE, {resolve, {Name, Host, AddressFamily}, Path}) of
                         {ok, Addr, Port, _Version} ->
                             {Addr, Port};
@@ -159,7 +161,7 @@ init([]) ->
     {ok, #{}}.
 
 handle_call({names, _Host}, _From, State) ->
-    log_append("Names: ~p", [""]),
+    ?LOG_DEBUG("Names: ~p", [""]),
     {reply, {ok, []}, State};
 
 handle_call({register, _Host, _Port, _AddressFamily}, _From, State) ->
@@ -209,14 +211,14 @@ resolve_address(Key, Path, AllowBootstrap, Cache) ->
         {ok, {Cached, TTL}} ->
             case erlang:system_time(second) of
                 Now when Now < TTL ->
-                    log_append("Cache hit: ~120p => ~120p (~120b)", [Key, Cached, TTL - Now]),
+                    ?LOG_DEBUG("Cache hit: ~120p => ~120p (~120b)", [Key, Cached, TTL - Now]),
                     {Cached, Cache};
                 _Now ->
-                    log_append("Cache expired: ~120p => ~120p (~b)", [Key, Cached, TTL - erlang:system_time(second)]),
+                    ?LOG_DEBUG("Cache expired: ~120p => ~120p (~b)", [Key, Cached, TTL - erlang:system_time(second)]),
                     resolve_address(Key, Path, AllowBootstrap, maps:remove(Key, Cache))
             end;
         error ->
-            log_append("Cache: no ~200p in ~200p", [Key, Cache]),
+            ?LOG_DEBUG("Cache: no ~200p in ~200p", [Key, Cache]),
             case resolve_indirect(Key, Path) of
                 {need_bootstrap, _} when AllowBootstrap =:= true ->
                     Cache1 = resolve_bootstrap(Cache),
@@ -239,14 +241,14 @@ resolve_indirect({Name, Host, AddressFamily}, Path) ->
             GoodResponses = [{A, P} || {A, P} <- Responses, is_integer(P), is_tuple(A)],
             case GoodResponses of
                 [] ->
-                    log_append("Not found: ~s@~s", [Name, Host]),
+                    ?LOG_DEBUG("Not found: ~s@~s", [Name, Host]),
                     {need_bootstrap, not_found};
                 [{Addr, Port} | _] ->
-                    log_append("Resolved: ~s@~s => ~120p:~b", [Name, Host, Addr, Port]),
+                    ?LOG_DEBUG("Resolved: ~s@~s => ~120p:~b", [Name, Host, Addr, Port]),
                     {{Addr, Port}, erlang:system_time(seconds) + ?RESOLVE_TTL_SEC}
             end;
         {[], _BadNodes} ->
-            log_append("Not connected: ~s@~s (~120p)", [Name, Host, nodes()]),
+            ?LOG_DEBUG("Not connected: ~s@~s (~120p)", [Name, Host, nodes()]),
             {need_bootstrap, disconnected}
     end.
 
@@ -263,10 +265,10 @@ resolve_bootstrap_record({Node, undefined, Addr, Port, _}, Cache) ->
             false ->
                 Host0
         end,
-    log_append("Resolving local host ~s@~s:~b", [Node, Host, Port]),
+    ?LOG_DEBUG("Resolving local host ~s@~s:~b", [Node, Host, Port]),
     cache(Node, Host, Family, Addr, Port, Cache);
 resolve_bootstrap_record({Node, Host, undefined, Port, Type}, Cache) ->
-    log_append("Resolving ~s@~s:~b (~s)", [Node, Host, Port, Type]),
+    ?LOG_DEBUG("Resolving ~s@~s:~b (~s)", [Node, Host, Port, Type]),
     NextCache = resolve_inet(Node, Host, Port, inet, Cache),
     resolve_inet(Node, Host, Port, inet6, NextCache);
 resolve_bootstrap_record({Node, Host, Addr, Port, _}, Cache) ->
@@ -276,17 +278,17 @@ resolve_bootstrap_record({Node, Host, Addr, Port, _}, Cache) ->
 resolve_inet(Node, Host, Port, Family, Cache) ->
     case inet:getaddr(Host, Family, ?RESOLVE_TIMEOUT) of
         {ok, Addr} ->
-            log_append("Resolved ~s@~s => ~120p:~b", [Node, Host, Addr, Port]),
+            ?LOG_DEBUG("Resolved ~s@~s => ~120p:~b", [Node, Host, Addr, Port]),
             cache(Node, Host, Family, Addr, Port, Cache);
         {error, Reason} ->
-            log_append("Cannot resolve ~s (~s): ~120p", [Host, Family, Reason]),
+            ?LOG_DEBUG("Cannot resolve ~s (~s): ~120p", [Host, Family, Reason]),
             Cache
     end.
 
 cache(Node, Host, Family, Addr, Port, Cache) ->
     Cache#{{atom_to_list(Node), Host, Family} => {{Addr, Port}, erlang:system_time(seconds) + ?RESOLVE_TTL_SEC}}.
 
-log_append(Format, Data) ->
+log(Format, Data) ->
     {ok, Fd} = prim_file:open("/tmp/spg.log", [append]),
     Time = calendar:system_time_to_rfc3339(erlang:system_time(second)),
     prim_file:write(Fd, iolist_to_binary(

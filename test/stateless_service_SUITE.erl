@@ -28,6 +28,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define (NODE_COUNT, 2).
 
@@ -54,11 +55,11 @@ all() ->
 
 %% Container start: no container, just a separate BEAM
 start_local(SName, ExtraArgs) ->
-    DistOptions = "-epmd_module epmd_client -start_epmd false -proto_dist spg",
+    DistOptions = "-epmd_module epmd_client -start_epmd false",
     CmdLine = lists:concat([DistOptions, ExtraArgs]),
     % Options
     Options = #{auto_connect => false, connect_all => false, cmd_line => CmdLine,
-        connection => {listen, undefined, undefined},
+        connection => {undefined, undefined},
         code_path => [filename:dirname(code:which(epmd_client))]},
     % return Pid of the node
     {ok, Peer} = local_node:start_link(SName, Options),
@@ -114,30 +115,6 @@ local(Config) ->
     % now verify if all went well
     ?assertEqual(lists:duplicate(NodeCount, ok), SpgProcs).
 
-
-docker(Config) ->
-    Image = proplists:get_value(image, Config, "spg"),
-    NodeCount = ?config(node_count, Config),
-
-    % control node
-    {ok, Control} = docker_node:start_link(control, Image,
-        #{auto_connect => false, connection => {connect, "control", 4368},
-            connect_all => false, host => "control"}),
-    % control container is now connected to us via TCP channel
-
-    % start N services
-    Nodes = [
-        begin
-            Name = list_to_atom("node" ++ integer_to_list(Seq)),
-            {ok, Node} = docker_node:start_link(Name, Image,
-                #{auto_connect => false, connect_all => false, link => "control"}),
-            Node
-        end
-        || Seq <- lists:seq(1, NodeCount)],
-
-    % shut everything down
-    [gen_node:stop(N) || N <- Nodes ++ [Control]].
-
 start_service(Peer) ->
     % start spg app
     {ok, [spg]} = gen_node:rpc(Peer, application, ensure_all_started, [spg]),
@@ -156,10 +133,69 @@ smoke_control(TestCase, NodeCount) ->
     % they will reply with 'ok'
     Published = spg:get_members(spg, TestCase),
     %
-    epmd_client:log_append("Found services: ~s:~s => ~120p", [spg, TestCase, Published]),
+    ?LOG_INFO("Found services: ~s:~s => ~120p", [spg, TestCase, Published]),
     % here we know that 'spg' processes have joined 'smoke' group
     Result = [sys:get_state(SpgService) || SpgService <- Published],
     % time to do the test (benchmark)
     gen_server:stop(Pid),
     % done, finishing, and returning 'ok' multiple times
     Result.
+
+docker(Config) ->
+    Image = proplists:get_value(image, Config, "spg"),
+    NodeCount = ?config(node_count, Config),
+
+    % control node
+    {ok, Control} = docker_node:start_link(control, Image,
+        #{auto_connect => false, connect_all => false, host => "control"}),
+
+    % need to wait until 'control' is started and listening, but for how long?
+    timer:sleep(500),
+
+    % start N services
+    Nodes = [
+        begin
+            Name = list_to_atom("node" ++ integer_to_list(Seq)),
+            {ok, Node} = docker_node:start_link(Name, Image,
+                #{auto_connect => false, connect_all => false, link => "control"}),
+            Node
+        end
+        || Seq <- lists:seq(1, NodeCount)],
+
+    %% flush output
+    flush_output(Control),
+
+    % now wait until control server gets N services
+    ExpectedStr = integer_to_list(NodeCount),
+    Reply = wait_for_services(Control, lists:reverse(ExpectedStr)),
+
+    % shut everything down
+    [gen_node:stop(N) || N <- Nodes ++ [Control]],
+    ?assertEqual(ExpectedStr, Reply).
+
+flush_output(Control) ->
+    case gen_node:read(Control, line) of
+        empty ->
+            ok;
+        _ ->
+            flush_output(Control)
+    end.
+
+wait_for_services(Control, ExpectedRev) ->
+    ok = gen_node:write(Control, <<"length(spg:get_members(smoke)).\n">>),
+    case get_response(Control, length(ExpectedRev)) of
+        ExpectedRev ->
+            lists:reverse(ExpectedRev);
+        _ ->
+            wait_for_services(Control, ExpectedRev)
+    end.
+
+get_response(Control, Len) ->
+    case gen_node:read(Control, line) of
+        empty ->
+            timer:sleep(5),
+            get_response(Control, Len);
+        {value, Line} ->
+            Rev = lists:reverse(binary_to_list(Line)),
+            lists:sublist(Rev, 1, Len)
+    end.

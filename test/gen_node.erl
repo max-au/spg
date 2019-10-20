@@ -20,7 +20,8 @@
     send/3,
     write/2,
     read/2,
-    signal/3
+    signal/3,
+    exec/1
 ]).
 
 %% gen_server callbacks
@@ -43,9 +44,7 @@
 % Stopping methods: rpc (init:stop()), close control socket, term os process, kill os process
 -type stop_method() :: stop | close | term | kill.
 
--type oob_connection() ::
-    {listen, inet:ip_address() | undefined, Port :: non_neg_integer() | undefined} |
-    {connect, inet:ip_address(), Port :: non_neg_integer()}.
+-type oob_connection() ::  {inet:ip_address() | undefined, Port :: non_neg_integer() | undefined}.
 
 %% gen_node: peer node start options
 -type start_options() :: #{
@@ -181,6 +180,10 @@ signal(kill, OsPid, Timeout) ->
 signal(0, OsPid, Timeout) ->
     kill_impl("-0", OsPid, Timeout).
 
+%% @doc Executes just like os:cmd, but also returns exit code (errorlevel)
+exec(What) ->
+    exec_impl(What, undefined, ?KILL_TIMEOUT).
+
 %% @doc waits for OS process to terminate
 wait_os_process_exit(OsPid, Timeout) ->
     wait_exit(OsPid, erlang:system_time(millisecond) + Timeout).
@@ -290,30 +293,21 @@ terminate(_Reason, State) ->
 %%--------------------------------------------------------------------
 %% Internal implementation
 
-to_list(List) when is_list(List) ->
-    List;
-to_list(Atom) when is_atom(Atom) ->
-    atom_to_list(Atom);
-to_list(Binary) when is_binary(Binary) ->
-    Binary.
-
 %% Here "Name" is what passed by user,
 %       but actual node name may also contain host.
 start_impl(Provider, Name, Options) ->
     % start acceptor, if asked to do so
     {ListenSocket, ListenPort} =
         case maps:find(connection, Options) of
-            {ok, {listen, Addr, undefined}} ->
+            {ok, {Addr, undefined}} ->
                 AddrIn = if Addr =:= undefined -> []; true -> {ip_address, Addr} end,
                 {ok, LSock} = gen_tcp:listen(0, [binary, {reuseaddr, true}, {packet, 4} | AddrIn]),
                 {ok, WaitPort} = inet:port(LSock),
                 {LSock, WaitPort};
-            {ok, {listen, Addr, WaitPort}} ->
+            {ok, {Addr, WaitPort}} ->
                 AddrIn = if Addr =:= undefined -> []; true -> {ip_address, Addr} end,
                 {ok, LSock} = gen_tcp:listen(WaitPort, [binary, {reuseaddr, true}, {packet, 4} | AddrIn]),
                 {LSock, WaitPort};
-            {ok, {connect, ConnectAddr, ConnectPort}} ->
-                {undefined, {ConnectAddr, ConnectPort}};
             error ->
                 {undefined, undefined}
         end,
@@ -321,8 +315,6 @@ start_impl(Provider, Name, Options) ->
     % command line generation part
     % also generates the full (expected) node name
     {Node, CmdLine} = Provider:command_line(Name, ListenPort, Options),
-
-    erlang:display({Node, CmdLine}),
 
     ct:print("CMD (~s): ~n~s", [Node, CmdLine]),
 
@@ -333,21 +325,11 @@ start_impl(Provider, Name, Options) ->
     NeedSlaveLoop = maps:find(start, Options) =/= error, % Compiler Bug: is_map_key() fails the compiler!
     %
     try
-        Socket =
-            case init_listen_connection(Node, ListenSocket, NeedSlaveLoop, maps:get(auto_connect, Options, false)) of
-                undefined when ListenPort =:= undefined ->
-                    undefined;
-                undefined ->
-                    {ConnAddr, ConnPort} = ListenPort,
-                    {ok, Sock} = gen_tcp:connect(ConnAddr, ConnPort, [binary, {packet, 4}]),
-                    receive_node_name(Sock, Node);
-                Sock ->
-                    Sock
-            end,
+        Socket = init_listen_connection(Node, ListenSocket, NeedSlaveLoop, maps:get(auto_connect, Options, false)),
         {Node, Socket, Port, OsPid}
     catch
         Class:Reason:Stack ->
-            StdOut = dump_port_contents(Port, ""),
+            StdOut = read_from_port(Port, "", ?KILL_TIMEOUT),
             terminate_impl(#state{provider = Provider, port = Port, os_pid = OsPid,
                 stop_methods = maps:get(stop_methods, Options, ?DEFAULT_STOP_METHODS)}),
             erlang:raise(Class, {Reason, StdOut}, Stack)
@@ -407,16 +389,6 @@ receive_node_name(Socket, Node) ->
                 {ok, AnotherNode} ->
                     error({wrong_node, {expected, Node}, {actual, AnotherNode}})
             end
-    end.
-
-dump_port_contents(undefined, Contents) ->
-    Contents;
-dump_port_contents(Port, Contents) ->
-    receive
-        {Port, {data, Data}} ->
-            dump_port_contents(Port, Contents ++ to_list(Data))
-    after 500 ->
-        Contents
     end.
 
 disconnect_impl(Node, DisconnectFun) ->
@@ -525,14 +497,25 @@ wait_exit(OsPid, Timelimit) ->
 
 kill_impl(Signal, OsPid, Timeout) when is_integer(OsPid) ->
     KillExec = os:find_executable("kill"),
-    KillPort = erlang:open_port({spawn_executable, KillExec},
-        [stderr_to_stdout, stream, exit_status, {args, [Signal, integer_to_list(OsPid)]}]),
+    exec_impl(KillExec, [Signal, integer_to_list(OsPid)], Timeout).
+
+exec_impl(Program, undefined, Timeout) ->
+    read_from_port(erlang:open_port({spawn, Program}, [stream, in, eof, hide, exit_status]), "", Timeout);
+exec_impl(Program, Args, Timeout) ->
+    Port = erlang:open_port({spawn_executable, Program}, [stream, in, eof, hide, exit_status, {args, Args}]),
+    read_from_port(Port, "", Timeout).
+
+read_from_port(undefined, Contents, _Timeout) ->
+    Contents;
+read_from_port(Port, Contents, Timeout) ->
     receive
-        {KillPort, {exit_status, ErrorLevel}} ->
-            catch erlang:port_close(KillPort),
-            ErrorLevel
+        {Port, {data, Data}} ->
+            read_from_port(Port, [Data | Contents], Timeout);
+        {Port, {exit_status, ErrorLevel}} ->
+            catch erlang:port_close(Port),
+            {ErrorLevel, lists:flatten(lists:reverse(Contents))}
     after Timeout ->
-        timeout
+        {timeout, lists:flatten(lists:reverse(Contents))}
     end.
 
 %% @private

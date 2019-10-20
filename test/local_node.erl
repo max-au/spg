@@ -63,7 +63,7 @@ terminate_node(_, Port, OsPid, port) ->
     catch
         % port was closed before we got here
         error:badarg ->
-            {undefined, OsPid}
+            ok
     after
         (catch erlang:port_close(Port))
     end;
@@ -105,15 +105,15 @@ command_line(Node, ListenPort, Options) ->
                 % longnames, host not specified
                 Host = inet_db:gethostname(),
                 Domain = inet_db:res_option(domain),
-                {lists:concat([" -name ", Node]), lists:concat([Node, "@", Host, ".", Domain])};
+                {lists:concat([" -name ", Node]), lists:flatten([ShortNode, "@", Host, ".", Domain])};
             true ->
-                {lists:concat([" -name ", Node]), lists:concat([Node, "@", ShortHost])};
+                {lists:concat([" -name ", Node]), lists:flatten([ShortNode, "@", ShortHost])};
             false when ShortHost =:= "" ->
                 % shortnames, host not specified
                 Host = inet_db:gethostname(),
-                {lists:concat([" -sname ", Node]), lists:concat([Node, "@", Host])};
+                {lists:concat([" -sname ", Node]), lists:flatten([ShortNode, "@", Host])};
             false ->
-                {lists:concat([" -sname ", Node]), lists:concat([Node, "@", ShortHost])}
+                {lists:concat([" -sname ", Node]), lists:flatten([ShortNode, "@", ShortHost])}
         end,
     % detached
     Detached = case maps:find(detached, Options) of

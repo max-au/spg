@@ -37,6 +37,8 @@ start_link(Scope, Name, Count) when is_atom(Scope), is_atom(Name), is_integer(Co
 %%--------------------------------------------------------------------
 %%% gen_server implementation
 
+-include_lib("kernel/include/logger.hrl").
+
 -record(state, {
     %% spg Scope to use
     scope :: atom(),
@@ -50,7 +52,7 @@ start_link(Scope, Name, Count) when is_atom(Scope), is_atom(Name), is_integer(Co
 init({Scope, Name, Count, Timeout}) ->
     % discover & bootstrap
     connect(Scope, Name, Count, erlang:system_time(millisecond) + Timeout),
-    epmd_client:log_append("Successfully found ~b instances of ~s:~s (~b nodes)",
+    ?LOG_DEBUG("Successfully found ~b instances of ~s:~s (~b nodes)",
         [length(spg:get_members(Scope, Name)), Scope, Name, length(nodes())]),
     {ok, #state{scope = Scope, name = Name}}.
 
@@ -91,7 +93,7 @@ discover(Scope, Name, Connected) ->
     AdditionalPids = lists:usort(AllPids) -- Connected,
     AdditionalNodes = [node(Pid) || Pid <- AdditionalPids],
     % let's connect to additional nodes
-    epmd_client:log_append("Trying to find ~s:~s on ~200p (from ~200p on ~200p)",
+    ?LOG_DEBUG("Trying to find ~s:~s on ~200p (from ~200p on ~200p)",
         [Scope, Name, AdditionalNodes, AllPids, nodes()]),
     % ignore if additional nodes cannot be connected
     [_ = net_kernel:connect_node(Node1) || Node1 <- AdditionalNodes],
@@ -105,13 +107,12 @@ ensure_bootstrap([{Name, Host, _, Port, _} | Tail]) ->
     Node = list_to_atom(lists:concat([Name, "@", Host])),
     Node =/= node() andalso lists:member(Node, nodes()) =:= false andalso
         begin
-            epmd_client:log_append("Booting from: ~p:~b", [Node, Port]),
             case net_kernel:connect_node(Node) of
                 true ->
-                    epmd_client:log_append("Booted! (~p:~b)", [Node, Port]),
+                    ?LOG_DEBUG("Booted from ~p:~b)", [Node, Port]),
                     ok;
                 false ->
-                    epmd_client:log_append("Error booting from ~p:~b", [Node, Port]),
+                    ?LOG_DEBUG("Could not boot from ~p:~b", [Node, Port]),
                     ensure_bootstrap(Tail)
             end
         end.

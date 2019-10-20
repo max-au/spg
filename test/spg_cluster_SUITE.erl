@@ -10,12 +10,13 @@
 
 %% Test server callbacks
 -export([
+    init_per_suite/1, end_per_suite/1,
     all/0
 ]).
 
 %% Test cases exports
 -export([
-    spg_proper_check/0, spg_proper_check/1
+    spg_sequential/0, spg_sequential/1
 ]).
 
 -behaviour(proper_statem).
@@ -31,7 +32,7 @@
 
 % PropEr shims
 -export([
-    start_node/1,
+    start_node/0,
     stop_node/1,
     start_scope/2,
     stop_scope/2,
@@ -49,50 +50,60 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
+init_per_suite(Config) ->
+    spg_SUITE:init_per_suite(Config).
+
+end_per_suite(Config) ->
+    spg_SUITE:end_per_suite(Config).
+
 all() ->
-    [spg_proper_check].
+    [spg_sequential].
 
 %%--------------------------------------------------------------------
 %% PropEr shims (wrapping around spg)
 
-%% 4 nodes in total (including self-node)
--define(PEER_NODES, [node1, node2, node3]).
+%% 4 nodes in total (excluding self)
+-define (PEER_COUNT, 3).
 
 %% 4 groups - to provoke collisions
 -define(GROUPS, [one, two, three, four]).
 
-
+% spg scope to work in
 -define (PROPER_SERVER, proper).
 
-start_node(Name0) ->
-    Name = case string:lexemes(atom_to_list(Name0), "@") of
-               [Name1, _] ->
-                   Name1;
-               [Name2] ->
-                   Name2
-           end,
-    {Name0, Socket} = spgt:spawn_node(?PROPER_SERVER, Name),
-    Socket.
+forever() ->
+    fun() -> receive after infinity -> ok end end.
 
-stop_node({_, Node, Socket}) ->
-    true = spgt:stop_node({Node, Socket}).
+start_node() ->
+    % generate node name
+    Name = list_to_atom("node_" ++ integer_to_list(erlang:system_time(millisecond)) ++
+        "_" ++ integer_to_list(rand:uniform(100))),
+    {ok, Peer} = local_node:start_link(Name, #{auto_connect => true,
+        connection => {undefined, undefined},
+        connect_all => false, code_path => [filename:dirname(code:which(spg))]}),
+    Node = gen_node:get_node(Peer),
+    {Node, Peer}.
+
+stop_node({_, Node, Socket}) when Node =/= node() ->
+    gen_node:stop(Socket),
+    true.
 
 start_scope(Access, Scope) ->
-    impl(Access, spgt, start_scope, [Scope]).
+    impl(Access, gen_server, start, [{local, Scope}, spg, [Scope], []]).
 
 stop_scope(Access, Scope) ->
-    impl(Access, spgt, stop_scope, [Scope]).
+    impl(Access, gen_server, stop, [Scope]).
 
 % spawn: do not use 'impl', as 'spawn' does not need rpc
 start_proc({direct, _, _}) ->
-    spgt:spawn();
+    spawn(forever());
 start_proc({true, Node, _}) ->
-    spgt:spawn(Node);
+    erlang:spawn(Node, forever());
 start_proc({false, _, Socket}) ->
-    spgt:rpc(Socket, spgt, spawn, []).
+    gen_node:rpc(Socket, erlang, spawn, [forever()]).
 
 stop_proc(Access, Pid) ->
-    impl(Access, spgt, stop_proc, [Pid]).
+    impl(Access, spg_SUITE, stop_proc, [Pid]).
 
 connect_peer(Access, NodeTwo) ->
     impl(Access, net_kernel, connect_node, [NodeTwo]).
@@ -124,11 +135,9 @@ impl({true, Node, _}, M, F, A) ->
             Other
     end;
 impl({false, _, Socket}, M, F, A) ->
-    case spgt:rpc(Socket, M, F, A) of
-        {badrpc, Reason} ->
-            Reason;
-        Other ->
-            Other
+    try gen_node:rpc(Socket, M, F, A)
+    catch
+        exit:Reason -> Reason
     end.
 
 
@@ -137,9 +146,8 @@ impl({false, _, Socket}, M, F, A) ->
 
 %% Single node state (bar name, which is the map key)
 -record(node, {
-    up = false :: boolean(),
-    % scope up or not? by default it is
-    scope = true :: boolean(),
+    % scope up or not?
+    scope = false :: boolean(),
     % controlling (rpc) socket
     socket :: undefined | gen_tcp:socket(),
     % dist connections from this node
@@ -152,11 +160,7 @@ impl({false, _, Socket}, M, F, A) ->
 %% PropEr state machine
 
 initial_state() ->
-    maps:from_list([{node(), #node{up = true}} |
-        %% generate full node name same way test_server does, it breaks layering,
-        %%  but compatible with PropEr way to store variables
-        [{list_to_atom(lists:concat([Node, "@", test_server_sup:hoststr()])), #node{}} ||
-            Node <- ?PEER_NODES]]).
+    #{node() => #node{scope = true}}.
 
 precondition(_State, _Cmd) ->
     true.
@@ -282,39 +286,39 @@ basic(Access) ->
     ].
 
 %% original idea was to throw in a list of nodes X list of ops, but... it won't work,
-%   because we'll sockets bindings, proc ids etc.
+%   because of different sockets bindings, proc ids etc.
 command(State) ->
-    % need to have a list of nodes up (for links management)
-    NodesUp = [Node || {Node, #node{up = true}} <- maps:to_list(State)],
+    % there could be a chance to start one more node
+    StartNode = [{call, ?MODULE, start_node, []} || map_size(State) < ?PEER_COUNT],
+
     %% generate all possible commands for all nodes:
-    Commands = maps:fold(
-        fun (Node, #node{up = false}, Cmds) ->
-                [{call, ?MODULE, start_node, [Node]} | Cmds];
-            (Node, #node{links = Links, procs = Procs} = Info, Cmds) ->
+    Nodes = maps:keys(State),
+    Commands = StartNode ++ maps:fold(
+        fun (Node, #node{links = Links, procs = Procs} = Info, Cmds) ->
                 Access = access(Node, Info),
                 [
                     {call, ?MODULE, stop_node, [Access]} || node() =/= Node
                 ] ++
-                    basic(Access) ++ links(Access, NodesUp, Links) ++
+                    basic(Access) ++ links(Access, Nodes, Links) ++
                         procs(Access, maps:keys(Procs)) ++ Cmds
         end, [], State),
     oneof(Commands).
 
-next_state(State, Socket, {call, ?MODULE, start_node, [Name]}) ->
-    #{Name := Node} = State,
+next_state(State, Res, {call, ?MODULE, start_node, []}) ->
+    Name = {call,erlang,element,[1, Res]},
     % also change master node state
     State1 = maps:update_with(node(),
         fun (#node{links = Links} = Master) ->
             Master#node{links = [Name | Links]}
         end, State),
-    State1#{Name => Node#node{up = true, socket = Socket, links = [node()]}};
+    State1#{Name => #node{socket = {call,erlang,element,[2, Res]}, links = [node()]}};
 next_state(State, _Res, {call, ?MODULE, stop_node, [{_, Name, _}]}) ->
     % remove links from all nodes
     State1 = maps:map(
         fun (_N, #node{links = Links} = Node) ->
             Node#node{links = lists:delete(Name, Links)}
         end, State),
-    State1#{Name => #node{}};
+    maps:remove(Name, State1);
 
 next_state(State, _Res, {call, ?MODULE, start_scope, [{_, Name, _}, _Scope]}) ->
     #{Name := Node} = State,
@@ -384,8 +388,11 @@ next_state(State, _Res, {call, ?MODULE, leave_group, [{_, Name, _}, Pid, Group]}
 next_state(State, _Res, _Call) ->
     State.
 
-prop_spg_no_crash(Config) when is_list(Config) ->
-    ?FORALL(Cmds, commands(?MODULE),
+%%--------------------------------------------------------------------
+%% PropEr properties
+
+prop_sequential(Config) when is_list(Config) ->
+    ?FORALL(Cmds, proper_statem:commands(?MODULE),
         ?TRAPEXIT(
             begin
                 {ok, _Pid} = spg:start_link(?PROPER_SERVER),
@@ -398,25 +405,24 @@ prop_spg_no_crash(Config) when is_list(Config) ->
                 % stop spg server
                 whereis(?PROPER_SERVER) =/= undefined andalso gen_server:stop(?PROPER_SERVER),
                 % close sockets & stop controlling procs
-                [spgt:stop_node({N, Sock}) ||
-                    {N, #node{up = true, socket = Sock}} <- maps:to_list(State), Name =/= N],
-                test_server_ctrl:kill_slavenodes(),
-                % check no slaves are still running
-                [] = ets:match_object(slave_tab,'_'),
+                [(catch gen_node:stop(Sock)) ||
+                    {N, #node{socket = Sock}} <- maps:to_list(State), Name =/= N],
+                % stop from writing too many dots in one row
                 rand:uniform(80) =:= 80 andalso io:fwrite(user, "\n", []),
-                ?WHENFAIL(
-                    begin
-                        erlang:display(Result),
-                        erlang:display(case History of [] -> "init"; _ -> lists:nth(length(History), Cmds) end),
-                        ct:pal("Failed: ~200p~nCommands: ~200p~nHistory: ~200p~nState: ~200p~nResult: ~200p",
-                            [case History of [] -> "init"; _ -> lists:nth(length(History), Cmds) end,
-                                Cmds, History, State, Result])
-                    end,
-                    Result =:= ok)
+                % print failed statement, if there is one
+                Result =/= ok andalso
+                    ct:pal("Failed: ~200p~nCommands: ~200p~nHistory: ~200p~nState: ~200p~nResult: ~200p",
+                        [case History of [] -> "init"; _ -> lists:nth(length(History), Cmds) end,
+                            Cmds, History, State, Result]),
+                ?assertEqual(ok, Result),
+                Result =:= ok
             end)).
 
-spg_proper_check() ->
-    [{doc, "PropEr tests for spg module, long, 24 hours timeout"}, {timetrap, {hours, 24}}].
+%%--------------------------------------------------------------------
+%% Actual test cases
 
-spg_proper_check(Config) ->
-    proper:quickcheck(prop_spg_no_crash(Config), [{numtests, 200000}, {to_file, user}]).
+spg_sequential() ->
+    [{doc, "Sequential quickcheck/PropEr test, long, 24 hours timeout"}, {timetrap, {hours, 24}}].
+
+spg_sequential(Config) ->
+    proper:quickcheck(prop_sequential(Config), [{numtests, 200000}, {to_file, user}]).

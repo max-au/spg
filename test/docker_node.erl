@@ -64,7 +64,7 @@ terminate_node(_, Port, OsPid, port) ->
     catch
         % port was closed before we got here
         error:badarg ->
-            {undefined, OsPid}
+            ok
     after
         (catch erlang:port_close(Port))
     end;

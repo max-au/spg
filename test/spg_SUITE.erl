@@ -172,7 +172,7 @@ two(Config) when is_list(Config) ->
     ?assertEqual(lists:sort([Pid2, Pid3]),
         lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
     % stop the peer
-    spgt:stop_node(TwoPeer, Socket),
+    spgt:stop_node({TwoPeer, Socket}),
     % hope that 'nodedown' comes before we route our request
     sync(?FUNCTION_NAME),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
@@ -195,7 +195,7 @@ thundering_herd(Config) when is_list(Config) ->
     [gen_server:cast(?FUNCTION_NAME, {sync, PeerSpg, FakeSync}) || _ <- lists:seq(1, SyncCount)],
     % next call must not timetrap, otherwise test fails
     spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self()),
-    spgt:stop_node(Peer, Socket).
+    spgt:stop_node({Peer, Socket}).
 
 initial(Config) when is_list(Config) ->
     Pid = spgt:spawn(),
@@ -210,24 +210,24 @@ initial(Config) when is_list(Config) ->
     spgt:stop_proc(Pid),
     sync({?FUNCTION_NAME, Peer}),
     ?assertEqual([], rpc:call(Peer, spg, get_members, [?FUNCTION_NAME, ?FUNCTION_NAME])),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 netsplit(Config) when is_list(Config) ->
     {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
-    ?assertEqual(Peer, spgt:rpc(Socket, erlang, node, [])), % just to test RPC
+    ?assertEqual(Peer, gen_node:rpc(Socket, erlang, node, [])), % just to test RPC
     RemoteOldPid = spgt:spawn(Peer),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, '$invisible', RemoteOldPid])),
     % hohoho, partition!
-    erlang:disconnect_node(Peer),
-    ?assertEqual(Peer, spgt:rpc(Socket, erlang, node, [])), % just to ensure RPC still works
-    RemotePid = spgt:rpc(Socket, spgt, spawn, []),
-    ?assertEqual([], spgt:rpc(Socket, erlang, nodes, [])),
-    ?assertEqual(ok, spgt:rpc(Socket, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])), % join - in a partition!
+    gen_node:disconnect(Socket),
+    ?assertEqual(Peer, gen_node:rpc(Socket, erlang, node, [])), % just to ensure RPC still works
+    RemotePid = gen_node:rpc(Socket, spgt, spawn, []),
+    ?assertEqual([], gen_node:rpc(Socket, erlang, nodes, [])),
+    ?assertEqual(ok, gen_node:rpc(Socket, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])), % join - in a partition!
     %
-    ?assertEqual(ok, spgt:rpc(Socket, spg, leave, [?FUNCTION_NAME, '$invisible', RemoteOldPid])),
-    ?assertEqual(ok, spgt:rpc(Socket, spg, join, [?FUNCTION_NAME, '$visible', RemoteOldPid])),
-    ?assertEqual([RemoteOldPid], spgt:rpc(Socket, spg, get_local_members, [?FUNCTION_NAME, '$visible'])),
+    ?assertEqual(ok, gen_node:rpc(Socket, spg, leave, [?FUNCTION_NAME, '$invisible', RemoteOldPid])),
+    ?assertEqual(ok, gen_node:rpc(Socket, spg, join, [?FUNCTION_NAME, '$visible', RemoteOldPid])),
+    ?assertEqual([RemoteOldPid], gen_node:rpc(Socket, spg, get_local_members, [?FUNCTION_NAME, '$visible'])),
     % join locally too
     LocalPid = spgt:spawn(),
     ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, LocalPid)),
@@ -240,7 +240,7 @@ netsplit(Config) when is_list(Config) ->
     sync({?FUNCTION_NAME, Peer}),
     ?assertEqual(Pids, lists:sort(rpc:call(Peer, spg, get_members, [?FUNCTION_NAME, ?FUNCTION_NAME]))),
     ?assertEqual([RemoteOldPid], spg:get_members(?FUNCTION_NAME, '$visible')),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 trisplit(Config) when is_list(Config) ->
@@ -248,8 +248,7 @@ trisplit(Config) when is_list(Config) ->
     _PeerPid1 = spgt:spawn(Peer),
     PeerPid2 = spgt:spawn(Peer),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, three, PeerPid2])),
-    erlang:disconnect_node(Peer),
-    timer:sleep(10), % needed to give net_kernel time to disconnect
+    gen_node:disconnect(Socket1),
     ?assertEqual(true, net_kernel:connect_node(Peer)),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, one, PeerPid2])),
     % now ensure sync happened
@@ -258,8 +257,8 @@ trisplit(Config) when is_list(Config) ->
     ?assertEqual(lists:sort([node(), Peer]), lists:sort(rpc:call(Peer2, erlang, nodes, []))),
     sync({?FUNCTION_NAME, Peer2}),
     ?assertEqual([PeerPid2], rpc:call(Peer2, spg, get_members, [?FUNCTION_NAME, one])),
-    spgt:stop_node(Peer, Socket1),
-    spgt:stop_node(Peer2, Socket2),
+    spgt:stop_node({Peer, Socket1}),
+    spgt:stop_node({Peer2, Socket2}),
     ok.
 
 foursplit(Config) when is_list(Config) ->
@@ -270,45 +269,43 @@ foursplit(Config) when is_list(Config) ->
     PeerPid1 = spgt:spawn(Peer),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, one, Pid)),
     ?assertEqual(not_joined, spg:leave(?FUNCTION_NAME, three, Pid)),
-    erlang:disconnect_node(Peer),
-    ?assertEqual(ok, spgt:rpc(Socket, spgt, stop_proc, [PeerPid1])),
+    gen_node:disconnect(Socket),
+    ?assertEqual(ok, gen_node:rpc(Socket, spgt, stop_proc, [PeerPid1])),
     ?assertEqual(not_joined, spg:leave(?FUNCTION_NAME, three, Pid)),
     ?assertEqual(true, net_kernel:connect_node(Peer)),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, one)),
-    ?assertEqual([], spgt:rpc(Socket, spg, get_members, [?FUNCTION_NAME, one])),
-    spgt:stop_node(Peer, Socket),
+    ?assertEqual([], gen_node:rpc(Socket, spg, get_members, [?FUNCTION_NAME, one])),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 exchange(Config) when is_list(Config) ->
     {Peer1, Socket1} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
     {Peer2, Socket2} = spgt:spawn_node(?FUNCTION_NAME, exchange_second),
-    Pids10 = [spgt:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
-    Pids2 = [spgt:rpc(Socket2, spgt, spawn, []) || _ <- lists:seq(1, 10)],
-    Pids11 = [spgt:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
+    Pids10 = [gen_node:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
+    Pids2 = [gen_node:rpc(Socket2, spgt, spawn, []) || _ <- lists:seq(1, 10)],
+    Pids11 = [gen_node:rpc(Socket1, spgt, spawn, []) || _ <- lists:seq(1, 10)],
     % kill first 3 pids from node1
     {PidsToKill, Pids1} = lists:split(3, Pids10),
     %
-    ?assertEqual(ok, spgt:rpc(Socket1, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, Pids10])),
+    ?assertEqual(ok, gen_node:rpc(Socket1, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, Pids10])),
     sync({?FUNCTION_NAME, Peer1}),
     ?assertEqual(lists:sort(Pids10), lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
-    [spgt:rpc(Socket1, spgt, stop_proc, [Pid]) || Pid <- PidsToKill],
+    [gen_node:rpc(Socket1, spgt, stop_proc, [Pid]) || Pid <- PidsToKill],
     sync(?FUNCTION_NAME),
     sync({?FUNCTION_NAME, Peer1}),
     %
     Pids = lists:sort(Pids1 ++ Pids2 ++ Pids11),
     ?assert(lists:all(fun erlang:is_pid/1, Pids)),
     %
-    erlang:disconnect_node(Peer1),
-    erlang:disconnect_node(Peer2),
-    %
-    timer:sleep(5),
+    gen_node:disconnect(Socket1),
+    gen_node:disconnect(Socket2),
     %
     sync(?FUNCTION_NAME),
     ?assertEqual([], lists:sort(spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME))),
     %
-    [?assertEqual(ok, spgt:rpc(Socket2, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, Pid])) || Pid <- Pids2],
-    [?assertEqual(ok, spgt:rpc(Socket1, spg, join, [?FUNCTION_NAME, second, Pid])) || Pid <- Pids11],
-    ?assertEqual(ok, spgt:rpc(Socket1, spg, join, [?FUNCTION_NAME, third, Pids11])),
+    [?assertEqual(ok, gen_node:rpc(Socket2, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, Pid])) || Pid <- Pids2],
+    [?assertEqual(ok, gen_node:rpc(Socket1, spg, join, [?FUNCTION_NAME, second, Pid])) || Pid <- Pids11],
+    ?assertEqual(ok, gen_node:rpc(Socket1, spg, join, [?FUNCTION_NAME, third, Pids11])),
     % rejoin
     ?assertEqual(true, net_kernel:connect_node(Peer1)),
     ?assertEqual(true, net_kernel:connect_node(Peer2)),
@@ -320,20 +317,20 @@ exchange(Config) when is_list(Config) ->
     ?assertEqual(lists:sort(Pids11), lists:sort(spg:get_members(?FUNCTION_NAME, third))),
     %
     {Left, Stay} = lists:split(3, Pids11),
-    ?assertEqual(ok, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, third, Left])),
+    ?assertEqual(ok, gen_node:rpc(Socket1, spg, leave, [?FUNCTION_NAME, third, Left])),
     sync({?FUNCTION_NAME, Peer1}),
     sync(?FUNCTION_NAME),
     ?assertEqual(lists:sort(Stay), lists:sort(spg:get_members(?FUNCTION_NAME, third))),
-    ?assertEqual(not_joined, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, left, Stay])),
-    ?assertEqual(ok, spgt:rpc(Socket1, spg, leave, [?FUNCTION_NAME, third, Stay])),
+    ?assertEqual(not_joined, gen_node:rpc(Socket1, spg, leave, [?FUNCTION_NAME, left, Stay])),
+    ?assertEqual(ok, gen_node:rpc(Socket1, spg, leave, [?FUNCTION_NAME, third, Stay])),
     sync({?FUNCTION_NAME, Peer1}),
     sync(?FUNCTION_NAME),
     ?assertEqual([], lists:sort(spg:get_members(?FUNCTION_NAME, third))),
     sync({?FUNCTION_NAME, Peer1}),
     sync(?FUNCTION_NAME),
     %
-    spgt:stop_node(Peer1, Socket1),
-    spgt:stop_node(Peer2, Socket2),
+    spgt:stop_node({Peer1, Socket1}),
+    spgt:stop_node({Peer2, Socket2}),
     ok.
 
 nolocal(Config) when is_list(Config) ->
@@ -342,7 +339,7 @@ nolocal(Config) when is_list(Config) ->
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
     ?assertEqual([], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 double(Config) when is_list(Config) ->
@@ -354,7 +351,7 @@ double(Config) when is_list(Config) ->
     sync(?FUNCTION_NAME),
     sync({?FUNCTION_NAME, Peer}),
     ?assertEqual([Pid, Pid], rpc:call(Peer, spg, get_members, [?FUNCTION_NAME, ?FUNCTION_NAME])),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 scope_restart(Config) when is_list(Config) ->
@@ -373,7 +370,7 @@ scope_restart(Config) when is_list(Config) ->
     sync({?FUNCTION_NAME, Peer}),
     sync(?FUNCTION_NAME),
     ?assertEqual([RemotePid], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 missing_scope_join(Config) when is_list(Config) ->
@@ -382,18 +379,17 @@ missing_scope_join(Config) when is_list(Config) ->
     RemotePid = spgt:spawn(Peer),
     ?assertMatch({badrpc, {'EXIT', {noproc, _}}}, rpc:call(Peer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
     ?assertMatch({badrpc, {'EXIT', {noproc, _}}}, rpc:call(Peer, spg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 disconnected_start(Config) when is_list(Config) ->
-    {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME),
-    erlang:disconnect_node(Peer),
-    ?assertEqual(ok, spgt:rpc(Socket, spgt, stop_scope, [?FUNCTION_NAME])),
-    ?assertMatch({ok, _Pid}, spgt:rpc(Socket, spgt, start_scope,[?FUNCTION_NAME])),
-    ?assertEqual(ok, spgt:rpc(Socket, spgt, stop_scope, [?FUNCTION_NAME])),
-    RemotePid = spgt:rpc(Socket, spgt, spawn, []),
+    {Peer, Socket} = spgt:spawn_node(?FUNCTION_NAME, ?FUNCTION_NAME, false),
+    ?assertEqual(ok, gen_node:rpc(Socket, spgt, stop_scope, [?FUNCTION_NAME])),
+    ?assertMatch({ok, _Pid}, gen_node:rpc(Socket, spgt, start_scope,[?FUNCTION_NAME])),
+    ?assertEqual(ok, gen_node:rpc(Socket, spgt, stop_scope, [?FUNCTION_NAME])),
+    RemotePid = gen_node:rpc(Socket, spgt, spawn, []),
     ?assert(is_pid(RemotePid)),
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 forced_sync() ->
@@ -410,9 +406,7 @@ forced_sync(Config) when is_list(Config) ->
     RemoteScopePid = rpc:call(Peer, erlang, whereis, [?FUNCTION_NAME]),
     ?assert(is_pid(RemoteScopePid)),
     % hohoho, partition!
-    erlang:disconnect_node(Peer),
-    % OTP thing - has to sleep...
-    timer:sleep(5),
+    gen_node:disconnect(Socket),
     ?assertEqual(true, net_kernel:connect_node(Peer)),
     % now ensure sync happened
     sync({?FUNCTION_NAME, Peer}),
@@ -439,7 +433,7 @@ forced_sync(Config) when is_list(Config) ->
     sync(?FUNCTION_NAME),
     ?assertEqual(Expected, lists:sort(spg:get_members(?FUNCTION_NAME, one))),
     %
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     ok.
 
 group_leave(Config) when is_list(Config) ->
@@ -455,7 +449,7 @@ group_leave(Config) when is_list(Config) ->
     sync(?FUNCTION_NAME),
     ?assertEqual(Remain, spg:get_members(?FUNCTION_NAME, two)),
     %
-    spgt:stop_node(Peer, Socket),
+    spgt:stop_node({Peer, Socket}),
     %
     sync(?FUNCTION_NAME),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, two)),

@@ -75,7 +75,7 @@ start_node(Name0) ->
     Socket.
 
 stop_node({_, Node, Socket}) ->
-    true = spgt:stop_node(Node, Socket).
+    true = spgt:stop_node({Node, Socket}).
 
 start_scope(Access, Scope) ->
     impl(Access, spgt, start_scope, [Scope]).
@@ -398,7 +398,7 @@ prop_spg_no_crash(Config) when is_list(Config) ->
                 % stop spg server
                 whereis(?PROPER_SERVER) =/= undefined andalso gen_server:stop(?PROPER_SERVER),
                 % close sockets & stop controlling procs
-                [spgt:stop_node(N, Sock) ||
+                [spgt:stop_node({N, Sock}) ||
                     {N, #node{up = true, socket = Sock}} <- maps:to_list(State), Name =/= N],
                 test_server_ctrl:kill_slavenodes(),
                 % check no slaves are still running

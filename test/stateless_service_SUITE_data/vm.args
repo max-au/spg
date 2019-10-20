@@ -1,0 +1,5 @@
+-sname stateless
+-setcookie cookie
+-epmd_module epmd_client
+-start_epmd false
+-proto_dist spg

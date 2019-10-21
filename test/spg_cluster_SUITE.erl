@@ -135,10 +135,7 @@ impl({true, Node, _}, M, F, A) ->
             Other
     end;
 impl({false, _, Socket}, M, F, A) ->
-    try gen_node:rpc(Socket, M, F, A)
-    catch
-        exit:Reason -> Reason
-    end.
+    catch gen_node:rpc(Socket, M, F, A).
 
 
 %%--------------------------------------------------------------------
@@ -177,7 +174,7 @@ test_scope_up(State, Name, Res) ->
             true;
         {false, {'EXIT', {noproc, _}}} ->
             true;
-        {false, noproc} ->
+        {false, {noproc, _}} ->
             true;
         _ ->
             erlang:display({"Postcondition error: ", Name, "Result ", Res, "Scope Up: ", ScopeUp}),

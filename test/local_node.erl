@@ -108,7 +108,7 @@ command_line(Node, ListenPort, Options) ->
                 {lists:concat([" -name ", Node]), lists:flatten([ShortNode, "@", Host, ".", Domain])};
             true ->
                 {lists:concat([" -name ", Node]), lists:flatten([ShortNode, "@", ShortHost])};
-            false when ShortHost =:= "" ->
+            ShortOrIgnored when ShortOrIgnored =:= ignored; ShortOrIgnored =:= false, ShortHost =:= "" ->
                 % shortnames, host not specified
                 Host = inet_db:gethostname(),
                 {lists:concat([" -sname ", Node]), lists:flatten([ShortNode, "@", Host])};

@@ -12,7 +12,8 @@
     suite/0,
     all/0,
     init_per_suite/1,
-    end_per_suite/1
+    end_per_suite/1,
+    init_per_testcase/2
 ]).
 
 %% Test cases exports
@@ -33,18 +34,31 @@
 -define (NODE_COUNT, 2).
 
 suite() ->
-    [{timetrap, {seconds, 20}}].
+    [{timetrap, {seconds, 30}}].
 
 init_per_suite(Config) ->
     % build docker image
-    %Image = "spg",
-    %os:cmd("docker build . -t " ++ Image ++ ":latest"),
-    [{node_count, ?NODE_COUNT} | Config].
+    case build(Config) of
+        undefined ->
+            [{node_count, ?NODE_COUNT} | Config];
+        Image ->
+            [{node_count, ?NODE_COUNT}, {image, Image} | Config]
+    end.
 
 end_per_suite(Config) ->
     % remove image
-    %proplists:get_value(image, Config) =/= undefined andalso
-    %    os:cmd("docker rmi " ++ proplists:get_value(image, Config)),
+    proplists:get_value(image, Config) =/= undefined andalso
+        os:cmd("docker rmi " ++ proplists:get_value(image, Config)),
+    Config.
+
+init_per_testcase(docker, Config) ->
+    case proplists:get_value(image, Config, undefined) of
+        undefined ->
+            skip;
+        Img when is_list(Img) ->
+            Config
+    end;
+init_per_testcase(_, Config) ->
     Config.
 
 all() ->
@@ -142,7 +156,7 @@ smoke_control(TestCase, NodeCount) ->
     Result.
 
 docker(Config) ->
-    Image = proplists:get_value(image, Config, "spg"),
+    Image = ?config(image, Config),
     NodeCount = ?config(node_count, Config),
 
     % control node
@@ -199,3 +213,34 @@ get_response(Control, Len) ->
             Rev = lists:reverse(binary_to_list(Line)),
             lists:sublist(Rev, 1, Len)
     end.
+
+build(Config) ->
+    DataDir = ?config(data_dir, Config),
+    PrivDir = ?config(priv_dir, Config),
+    % copy files needed to build a container
+    {ok, _} = file:copy(filename:join(DataDir, "Dockerfile"),
+        filename:join(PrivDir, "Dockerfile")),
+    {ok, _} = file:copy(filename:join(DataDir, "rebar.config.template"),
+        filename:join(PrivDir, "rebar.config")),
+    % copy config
+    ok = file:make_dir(filename:join(PrivDir, "config")),
+    copy_files(DataDir, filename:join(PrivDir, "config"), ["sys.config", "vm.args"]),
+    % copy sources
+    ok = file:make_dir(filename:join(PrivDir, "src")),
+    CodeDir = code:lib_dir(spg, src),
+    {ok, SrcFiles} = file:list_dir(CodeDir),
+    copy_files(CodeDir, filename:join(PrivDir, "src"), SrcFiles),
+    % replace one source...
+    {ok, _} = file:copy(filename:join(DataDir, "test_sup.erl.template"),
+        filename:join([PrivDir, "src", "spg_sup.erl"])),
+    % now build an image
+    Image = "spg",
+    Res = os:cmd("docker build " ++ PrivDir ++ " -t " ++ Image ++ ":latest"),
+    % check that it was "successfully tagged"
+    Expected = "Successfully tagged spg:latest\n",
+    Actual = lists:reverse(lists:sublist(lists:reverse(Res), 1, length(Expected))),
+    if Expected == Actual -> Image; true -> ct:pal("Docker output: ~120p", [Res]), undefined end.
+
+copy_files(From, To, Files) ->
+    [{ok, _} = file:copy(filename:join(From, File), filename:join(To, File))
+        || File <- Files].

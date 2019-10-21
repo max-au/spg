@@ -177,6 +177,8 @@ test_scope_up(State, Name, Res) ->
             true;
         {false, {'EXIT', {noproc, _}}} ->
             true;
+        {false, noproc} ->
+            true;
         _ ->
             erlang:display({"Postcondition error: ", Name, "Result ", Res, "Scope Up: ", ScopeUp}),
             false

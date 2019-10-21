@@ -116,7 +116,7 @@ start_link(Provider, Node, Options) ->
 %% @doc Stops the node and waits until it leaves distribution cluster
 -spec stop(dest()) -> ok.
 stop(Dest) ->
-    gen_server:call(Dest, stop, ?DISCONNECT_TIMEOUT + ?KILL_TIMEOUT + ?ADDED_TIMEOUT).
+    gen_server:call(Dest, stop, ?DISCONNECT_TIMEOUT + ?CONNECT_TIMEOUT + ?KILL_TIMEOUT + ?ADDED_TIMEOUT).
 
 %% @doc Disconnects remote node and waits for it to be out of cluster
 -spec disconnect(Dest :: dest()) -> true | false.
@@ -356,7 +356,7 @@ init_listen_connection(Node, ListenSocket, true, true) ->
 % control connection is needed, slave loop is not
 init_listen_connection(Node, ListenSocket, false, AutoConnect) ->
     Socket = connect_oob_socket(ListenSocket, Node),
-    AutoConnect andalso (true = net_kernel:connect_node(Node)),
+    AutoConnect andalso connect_node_impl(Node, erlang:system_time(millisecond) + ?CONNECT_TIMEOUT),
     Socket.
 
 connect_node_impl(Node, Timelimit) ->

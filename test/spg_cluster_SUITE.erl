@@ -407,7 +407,9 @@ prop_sequential(Config) when is_list(Config) ->
                 [(catch gen_node:stop(Sock)) ||
                     {N, #node{socket = Sock}} <- maps:to_list(State), Name =/= N],
                 % stop from writing too many dots in one row
-                rand:uniform(80) =:= 80 andalso io:fwrite(user, "\n", []),
+                Counter = ets:update_counter(proper_counter, counter, {2, 1}, {counter, 0}),
+                Counter rem 120 =:= 0 andalso
+                        io:fwrite(user, "~b\n", [Counter]),
                 % print failed statement, if there is one
                 Result =/= ok andalso
                     ct:pal("Failed: ~200p~nCommands: ~200p~nHistory: ~200p~nState: ~200p~nResult: ~200p",
@@ -424,4 +426,7 @@ spg_sequential() ->
     [{doc, "Sequential quickcheck/PropEr test, long, 24 hours timeout"}, {timetrap, {hours, 24}}].
 
 spg_sequential(Config) ->
-    proper:quickcheck(prop_sequential(Config), [{numtests, 200000}, {to_file, user}]).
+    Counter = ets:new(proper_counter, [public, named_table]),
+    Result = proper:quickcheck(prop_sequential(Config), [{numtests, 200000}, {to_file, user}]),
+    catch ets:delete(Counter),
+    Result.

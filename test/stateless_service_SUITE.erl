@@ -54,7 +54,7 @@ end_per_suite(Config) ->
 init_per_testcase(docker, Config) ->
     case proplists:get_value(image, Config, undefined) of
         undefined ->
-            skip;
+            {skip, "Docker image cannot be built, ensure you have docker installed and running"};
         Img when is_list(Img) ->
             Config
     end;

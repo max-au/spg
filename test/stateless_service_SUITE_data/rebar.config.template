@@ -1,0 +1,10 @@
+% Release: need it for Docker node testing
+{relx, [
+    {release, {"spg", "1.0.0"}, [spg]},
+    {vm_args, "config/vm.args"},
+    {sys_config, "config/sys.config"},
+    {include_src, true},
+    {dev_mode, false},
+    {include_erts, true},
+    {extended_start_script, false}
+]}.

@@ -12,8 +12,8 @@
 %% Test server callbacks
 -export([
     all/0,
-    init_per_testcase/2,
-    end_per_testcase/2
+    init_per_suite/1,
+    end_per_suite/1
 ]).
 
 %% Test cases exports
@@ -37,11 +37,11 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
-init_per_testcase(_TestCase, Config) ->
-    Config.
+init_per_suite(Config) ->
+    spg_SUITE:init_per_suite(Config).
 
-end_per_testcase(_TestCase, _Config) ->
-    test_server_ctrl:kill_slavenodes().
+end_per_suite(Config) ->
+    spg_SUITE:end_per_suite(Config).
 
 all() ->
     % [global, pg2, spg, syn, cpg],
@@ -50,10 +50,17 @@ all() ->
 %%--------------------------------------------------------------------
 %% Benchmarking helpers
 
-start_nodes(Count, Scope) ->
-    NodeNames = [list_to_atom("node_" ++ integer_to_list(Seq)) || Seq <- lists:seq(1, Count - 1)],
-    [spgt:spawn_node(Scope, Node) || Node <- NodeNames],
+start_nodes(Count) ->
+    NodeNames = [list_to_atom("bench_" ++ integer_to_list(Seq)) || Seq <- lists:seq(1, Count - 1)],
+    Opts = #{auto_connect => true, connection => {undefined, undefined},
+        connect_all => true, code_path => [filename:dirname(code:which(spg))]},
+    [begin {ok, Peer} = local_node:start_link(Node, Opts), Peer end || Node <- NodeNames],
     AllNodes = [node() | nodes()],
+    ?assertEqual(Count - 1, length(nodes())),
+    {Pids, []} = rpc:multicall(nodes(), gen_server, start, [{local, spg}, spg, [spg], []], 1000),
+    ?assertEqual(Count - 1, length([true || {ok, _} <- Pids])),
+    {SpgPids, []} = rpc:multicall(nodes(), erlang, whereis, [spg], 1000),
+    ?assertEqual(Count - 1, length(SpgPids)),
     % fully connect mesh
     [
         begin
@@ -171,7 +178,7 @@ clean_pids_table(Tab, _Ref) ->
 spawn(Count) ->
     clean_pids_table(?PID_TABLE, ets:whereis(?PID_TABLE)),
     Node = atom_to_list(node()) ++ "_",
-    Pids = [{Node ++ integer_to_list(Seq), spgt:spawn()} || Seq <- lists:seq(1, Count)],
+    Pids = [{Node ++ integer_to_list(Seq), erlang:spawn(fun () -> receive after infinity -> ok end end)} || Seq <- lists:seq(1, Count)],
     true = ets:insert(?PID_TABLE, {pid, Pids}),
     Pids.
 
@@ -187,7 +194,8 @@ register(Fun) ->
 
 unregister(Fun) ->
     Procs = ets:lookup_element(?PID_TABLE, pid, 2),
-    [Fun(Name, Pid) || {Name, Pid} <- Procs].
+    [Fun(Name, Pid) || {Name, Pid} <- Procs],
+    ok.
 
 wait(_Fun, []) ->
     ok;
@@ -195,7 +203,7 @@ wait(Fun, [{Name, Proc} | Tail] = Procs) ->
     case Fun(Name) of
         undefined ->
             timer:sleep(5),
-            %ct:pal("Waiting for ~p (~p)", [Name, Proc]),
+            %ct:pal("Waiting for ~p (~p, ~b)", [Name, Proc, length(Procs)]),
             %ct:pal("Global: ~200p", [global:registered_names()]),
             %[
             %    begin
@@ -229,7 +237,8 @@ export_all() ->
     global_funs().
 
 timed_run(Fun, Args, Format, Name, ProcsTotal) when is_atom(Fun) ->
-    {Time, _Result} = timer:tc(rpc, multicall, [?MODULE, Fun, Args]),
+    {Time, {Result, []}} = timer:tc(rpc, multicall, [?MODULE, Fun, Args]),
+    ?assertEqual(lists:duplicate(length(nodes()) + 1, ok), Result),
     ct:pal(Format, [Name, Time/1000000, ProcsTotal/Time*1000000]);
 
 timed_run(Fun, Args, Format, Name, ProcsTotal) when is_function(Fun) ->
@@ -264,22 +273,22 @@ global() ->
     [{timetrap, {seconds, 20}}, {doc, "Benchmark for global"}].
 
 global(_Config) ->
-    start_nodes(?NODE_COUNT, undefined),
+    start_nodes(?NODE_COUNT),
     benchmark(global_funs(), 2).
 
 pg2() ->
     [{timetrap, {seconds, 120}}, {doc, "Benchmark for pg2"}].
 
 pg2(_Config) ->
-    start_nodes(?NODE_COUNT, undefined),
+    start_nodes(?NODE_COUNT),
     benchmark(pg2_funs(), 10000).
 
 spg() ->
     [{timetrap, {seconds, 120}}, {doc, "Benchmark for spg"}].
 
 spg(_Config) ->
-    start_nodes(?NODE_COUNT, ?FUNCTION_NAME),
-    {ok, Pid} = spg:start_link(?FUNCTION_NAME),
+    start_nodes(?NODE_COUNT),
+    {ok, Pid} = spg:start_link(spg),
     benchmark(spg_funs(), 10000),
     unlink(Pid),
     gen_server:stop(Pid).
@@ -288,7 +297,7 @@ syn() ->
     [{timetrap, {seconds, 120}}, {doc, "Benchmark for syn"}].
 
 syn(_Config) ->
-    start_nodes(?NODE_COUNT, ?FUNCTION_NAME),
+    start_nodes(?NODE_COUNT),
     AllNodes = [node() | nodes()],
     % add syn to code path
     Path = filename:dirname(code:which(syn)),
@@ -307,7 +316,7 @@ cpg() ->
     [{timetrap, {seconds, 120}}, {doc, "Benchmark for cpg"}].
 
 cpg(_Config) ->
-    start_nodes(?NODE_COUNT, ?FUNCTION_NAME),
+    start_nodes(?NODE_COUNT),
     Paths = [filename:dirname(code:which(App)) || App <- [cpg, quickrand, trie]],
     ?assertEqual({lists:duplicate(?NODE_COUNT, ok), []}, rpc:multicall(code, add_paths, [Paths])),
     ?assertMatch({_, []}, rpc:multicall(application, ensure_all_started, [cpg])),

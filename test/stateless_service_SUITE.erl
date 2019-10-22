@@ -38,11 +38,12 @@ suite() ->
 
 init_per_suite(Config) ->
     % build docker image
-    case build(Config) of
-        undefined ->
-            [{node_count, ?NODE_COUNT} | Config];
-        Image ->
-            [{node_count, ?NODE_COUNT}, {image, Image} | Config]
+    try
+        Image = build(Config),
+        [{node_count, ?NODE_COUNT}, {image, Image} | Config]
+    catch
+        _Class:_Reason ->
+            [{node_count, ?NODE_COUNT} | Config]
     end.
 
 end_per_suite(Config) ->
@@ -131,7 +132,7 @@ local(Config) ->
 
 start_service(Peer) ->
     % start spg app
-    {ok, [spg]} = gen_node:rpc(Peer, application, ensure_all_started, [spg]),
+    {ok, _Apps} = gen_node:rpc(Peer, application, ensure_all_started, [spg]),
     % locate 'control' service
     {ok, _Pid} = gen_node:rpc(Peer, gen_server, start, [stateless_service, {spg, control, 1, 5000}, []]),
     % locate 'service proc'

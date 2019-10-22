@@ -141,22 +141,26 @@ app() ->
     [{doc, "Tests application start/stop functioning, supervision & scopes"}].
 
 app(_Config) ->
-    {ok, _Apps} = application:ensure_all_started(spg),
-    ?assertNotEqual(undefined, whereis(spg)),
-    ?assertNotEqual(undefined, ets:whereis(spg)),
-    ok = application:stop(spg),
-    ?assertEqual(undefined, whereis(spg)),
-    ?assertEqual(undefined, ets:whereis(spg)),
-    %
-    application:set_env(spg, scopes, [?FUNCTION_NAME, two]),
-    {ok, _Apps} = application:ensure_all_started(spg),
-    ?assertNotEqual(undefined, whereis(?FUNCTION_NAME)),
-    ?assertNotEqual(undefined, whereis(two)),
-    ?assertNotEqual(undefined, ets:whereis(?FUNCTION_NAME)),
-    ?assertNotEqual(undefined, ets:whereis(two)),
-    application:stop(spg),
-    ?assertEqual(undefined, whereis(?FUNCTION_NAME)),
-    ?assertEqual(undefined, whereis(two)).
+    case application:ensure_all_started(spg) of
+        {ok, [spg]} ->
+            ?assertNotEqual(undefined, whereis(spg)),
+            ?assertNotEqual(undefined, ets:whereis(spg)),
+            ok = application:stop(spg),
+            ?assertEqual(undefined, whereis(spg)),
+            ?assertEqual(undefined, ets:whereis(spg)),
+            %
+            application:set_env(spg, scopes, [?FUNCTION_NAME, two]),
+            {ok, _Apps} = application:ensure_all_started(spg),
+            ?assertNotEqual(undefined, whereis(?FUNCTION_NAME)),
+            ?assertNotEqual(undefined, whereis(two)),
+            ?assertNotEqual(undefined, ets:whereis(?FUNCTION_NAME)),
+            ?assertNotEqual(undefined, ets:whereis(two)),
+            application:stop(spg),
+            ?assertEqual(undefined, whereis(?FUNCTION_NAME)),
+            ?assertEqual(undefined, whereis(two));
+        {error, {spg, {"no such file or directory","spg.app"}}} ->
+            {skipped, "not an spg app test"}
+    end.
 
 errors() ->
     [{doc, "Tests that errors are handled as expected, for example spg crashes when it needs to"}].

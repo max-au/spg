@@ -38,29 +38,24 @@ suite() ->
 
 init_per_suite(Config) ->
     % build docker image
-    % Config entries: "{apps, App | [Apps]}" - applications, in an umbrella release, or just an app
-    % Templates: {"clustermax_test_sup.erl.template", "spg/", "clustermax_sup.erl"} for an umbrella,
-    %   or {"spg_sup.erl.template", "", "spg_sup.erl"} when there is no umbrella app.
-    Config1 = [{apps, spg}, {template, [{"test_sup.erl.template", "src/spg_sup.erl"}]} | Config],
     try
-        Image = build(Config1),
-        [{node_count, ?NODE_COUNT}, {image, Image} | Config1]
+        Image = build(Config),
+        [{node_count, ?NODE_COUNT}, {image, Image} | Config]
     catch
-        Class:Reason:Stack ->
-            Comment = lists:flatten(io_lib:format("Image was not built, ~s:~p (~120p)", [Class, Reason, Stack])),
-            [{node_count, ?NODE_COUNT}, {image, {undefined, Comment}} | Config1]
+        _Class:_Reason ->
+            [{node_count, ?NODE_COUNT} | Config]
     end.
 
 end_per_suite(Config) ->
     % remove image
-    is_list(proplists:get_value(image, Config)) andalso
+    proplists:get_value(image, Config) =/= undefined andalso
         os:cmd("docker rmi " ++ proplists:get_value(image, Config)),
     Config.
 
 init_per_testcase(docker, Config) ->
     case proplists:get_value(image, Config, undefined) of
-        {undefined, Reason} ->
-            {skip, "Docker image cannot be built, ensure you have docker installed and running, " ++ Reason};
+        undefined ->
+            {skip, "Docker image cannot be built, ensure you have docker installed and running"};
         Img when is_list(Img) ->
             Config
     end;
@@ -104,13 +99,6 @@ local(Config) ->
     NodeCount = ?config(node_count, Config),
     DataPath = ?config(data_dir, Config),
 
-    Apps = case ?config(apps, Config) of
-               App0 when is_atom(App0) ->
-                   [App0];
-               List when is_list(List) ->
-                   List
-           end,
-
     SysConfig = lists:concat([" -config ", filename:join(DataPath, "sys.config")]),
 
     % control node
@@ -130,7 +118,7 @@ local(Config) ->
 
     % start spg scope on the control node
     %  (non-local start that by default, app does it)
-    [start_service(Apps, Peer) || Peer <- Nodes],
+    [start_service(Peer) || Peer <- Nodes],
 
     % run everything through control node, via gen_node RPC
     Result = gen_node:rpc(Control, ?MODULE, smoke_control, [smoke, NodeCount]),
@@ -142,9 +130,9 @@ local(Config) ->
     % now verify if all went well
     ?assertEqual(lists:duplicate(NodeCount, ok), SpgProcs).
 
-start_service(Apps, Peer) ->
+start_service(Peer) ->
     % start spg app
-    {ok, _Apps} = gen_node:rpc(Peer, application, ensure_all_started, Apps),
+    {ok, _Apps} = gen_node:rpc(Peer, application, ensure_all_started, [spg]),
     % locate 'control' service
     {ok, _Pid} = gen_node:rpc(Peer, gen_server, start, [stateless_service, {spg, control, 1, 5000}, []]),
     % locate 'service proc'
@@ -238,41 +226,21 @@ build(Config) ->
     % copy config
     ok = file:make_dir(filename:join(PrivDir, "config")),
     copy_files(DataDir, filename:join(PrivDir, "config"), ["sys.config", "vm.args"]),
-    % copy sources, depending on what apps are needed to be copied
-    {Umbrella, Apps} = case ?config(apps, Config) of
-                           List when is_list(List) ->
-                               {"apps/", List};
-                           App ->
-                               {"", [App]}
-                       end,
-    [copy_sources(Umbrella, App, PrivDir) || App <- Apps],
-    % replace templated sources
-    Templated = ?config(template, Config),
-    [{ok, _} = file:copy(filename:join(DataDir, From),
-        filename:join([PrivDir, To])) || {From, To} <- Templated],
+    % copy sources
+    ok = file:make_dir(filename:join(PrivDir, "src")),
+    CodeDir = code:lib_dir(spg, src),
+    {ok, SrcFiles} = file:list_dir(CodeDir),
+    copy_files(CodeDir, filename:join(PrivDir, "src"), SrcFiles),
+    % replace one source...
+    {ok, _} = file:copy(filename:join(DataDir, "test_sup.erl.template"),
+        filename:join([PrivDir, "src", "spg_sup.erl"])),
     % now build an image
-    Image = atom_to_list(hd(Apps)),
+    Image = "spg",
     Res = os:cmd("docker build " ++ PrivDir ++ " -t " ++ Image ++ ":latest"),
     % check that it was "successfully tagged"
-    Expected = lists:concat(["Successfully tagged ", Image, ":latest\n"]),
+    Expected = "Successfully tagged spg:latest\n",
     Actual = lists:reverse(lists:sublist(lists:reverse(Res), 1, length(Expected))),
-    Expected =/= Actual andalso error({docker, Res}),
-    Image.
-
-copy_sources(Umbrella, App, PrivDir) ->
-    SrcTarget =
-        if Umbrella =/= "" ->
-            ok = file:make_dir(filename:join(PrivDir, Umbrella)),
-            AppDir0 = filename:join([PrivDir, Umbrella, App]),
-            ok = file:make_dir(AppDir0),
-            filename:join([AppDir0, "src"]);
-            true ->
-                filename:join([PrivDir, "src"])
-        end,
-    ok = file:make_dir(SrcTarget),
-    CodeDir = code:lib_dir(App, src),
-    {ok, SrcFiles} = file:list_dir(CodeDir),
-    copy_files(CodeDir, SrcTarget, SrcFiles).
+    if Expected == Actual -> Image; true -> ct:pal("Docker output: ~120p", [Res]), undefined end.
 
 copy_files(From, To, Files) ->
     [{ok, _} = file:copy(filename:join(From, File), filename:join(To, File))

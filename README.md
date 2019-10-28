@@ -26,7 +26,35 @@ All nodes running spg process with the same scope name form an overlay network
 Join/leave calls must be done by the process running on the joining/leaving
 process owner node.
 
-**Overlay network discovery protocol**
+## API
+
+To discover services provided within some overlay network, it is necessary to
+join this network. Default application startup creates a single default overlay
+network named 'spg'. This network can be used with short API version:
+
+ * **join(Group, PidOrPids)** - joins single process or many processes to the specified group, it is allowed to
+ join the same process several times. All processes must be local the the node. Group may or may not
+ exist (in this case group name is created automatically)
+ * **leave(Group, PidOrPids)** - removes process or processes from the group. Processes must be local to the node.
+ * **get_members(Group)** - returns all processes that are a member of a specified group.
+ * **get_local_members(Group)** - return all processes, that are a member of a group, and are local to this node.
+ * **which_groups()** - returns a list of all groups know to this node
+ * **which_local_groups()** - returns a list of all groups that this node has published at least one process in
+
+A node may need to join multiple overlay networks. This can be done using
+spg application configuration variable (scopes), and spg application supervisor
+will automatically join these networks.
+
+It's possible to start the scope dynamically, using ```spg:start_link(ScopeName)```,
+or adding spg scope process as a child of your supervisor.
+
+Same API, with scope (overlay network) name as a first argument, should be used to join and leave groups
+belonging to that scope.
+
+## Implementation details
+Below are implementation details, subject to change without further notice.
+
+### Overlay network discovery protocol
 
 1. bootstrap:  
    monitor cluster membership  
@@ -38,7 +66,7 @@ process owner node.
    remove all processes from disconnected scope
 4. handle ‘nodeup’: send ```{discover, self()}``` to spg scope of a joined node
 
-**Join/leave protocol**
+### Join/leave protocol
 
 Join/leave calls are routed through local spg scope process.
 Local processes joined the group are monitored. When spg scope detects
@@ -48,26 +76,33 @@ overlay network.
 Handling remote spg scope ‘DOWN’ includes removal of all processes 
 owned by remote node from the scope.
 
-Join/leave operations contain originating scope process
+Join/leave operations contain originating scope process. This speeds up
+handling of node/scope down/up notifications. Tests were performed on a
+cluster of 5,000 machines, and up to 150,000 processes joining ~5,000 different groups
+within a single scope.
 
+If you need to handle more groups and processes, it is advised to run multiple
+scopes. It is more efficient to have 10 scopes with 100 groups than 1 scope with
+1000 groups, due to concurrent processing allowed when running multiple scope processes.
 
 Relies on message ordering done by Erlang distribution. All exchanges are happening only between
 corresponding spg gen_server processes.
 
 
 ## Build
-This project has no compile-time or run-time dependencies. Property-based
-tests requires PropEr library. 
+This project has no compile-time or run-time dependencies.
 
     $ rebar3 compile
 
 ### Running tests
-Smoke tests are implemented in spg_SUITE. It is expected to have 100%
-line coverage using a single spg_SUITE test suite:
+Smoke tests are implemented in spg_SUITE.
+Running any tests will fetch additional libraries as dependencies. This is only
+necessary to run the benchmarks (that are disabled by default). Running smoke
+tests is as easy as:
     
-    $ rebar3 ct --cover --suite spg_SUITE
+    $ rebar3 ct --cover && rebar3 cover --verbose
 
-Running property-based tests
+Running property-based tests (takes up to 24 hours):
 
     $ rebar3 ct --suite spg_cluster_SUITE
 
@@ -76,17 +111,12 @@ Unfortunately, OTP Common Test application suffers from issues preventing
 using 'cover' tool with multiple slave nodes starting and shutting down 
 rapidly. Thus coverage reports are turned off by default.
 
-Running all tests:
-
-    $ rebar3 ct
-    
-This may take a long time due to a large number of test cases generated.
 
 ### Formal model
-Used to generate stateful test call sequence.
+Used by PropEr library to generate stateful test call sequence.
 
 Generated events:
- * start peer node
+ * start peer node (up to some limit)
  * stop peer node
  * connect to peer node (distribution cluster)
  * disconnect from peer node (distribution cluster)
@@ -99,26 +129,25 @@ Generated events:
  * multi-leave
  
 Properties:
- * group contains all processes that joined the group on all dist-connected nodes running the same scope
+ * group contains all processes that joined the group on all dist-visible nodes running the same scope
  * group does not contain any other processes (e.g. exited or connected transitively)
 
 ## Feature requests
-Next releases are going to contain:
+Feature requests that are being considered (feel free to submit PR implementing any of these):
+ * speed up stateful property testing
+ * separate in/out queues for remote join/leave casts for improved performance
  * alternative process registry support
- * customisation for which_groups() to return groups sorted (using ordered_set internally)
- * delayed spg scope ‘DOWN’ processing to tolerate short network disruptions
+ * delayed ‘DOWN’ processing to tolerate short network disruptions
  * alternative service discovery integration 
  * region-aware scoping
- * (optional) empty groups (for drop-in pg2 compatibility)
- * separate in/out queues for remote join/leave casts for improved performance
- * periodic sync (automatic healing)
- * ability to survive scope process restart
  * non-process values
- * speed up stateful property testing
- * concurrent property testing mechanism
- * more benhmarks!
+ * health checks
 
 ## Changelog
+
+Version 1.1.1:
+ - revised tests to allow larger amount of nodes for property-based testing
+
 Version 1.1.0:
  - speed up initial sync at the expense of leave/join operations
  - return not_joined for leave_group if process has not joined the group before

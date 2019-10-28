@@ -118,7 +118,7 @@ spawn_node(Scope, Name) ->
 spawn_node(Scope, Name, AutoConnect) ->
     {ok, Peer} = local_node:start_link(Name, #{auto_connect => AutoConnect,
         connection => {undefined, undefined},
-        connect_all => false, code_path => [filename:dirname(code:which(spg))]}),
+        connect_all => false, code_path => [code:lib_dir(spg, ebin)]}),
     {ok, _SpgPid} = gen_node:rpc(Peer, gen_server, start, [{local, Scope}, spg, [Scope], []]),
     Node = gen_node:get_node(Peer),
     {Node, Peer}.

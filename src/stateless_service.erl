@@ -38,6 +38,7 @@ start_link(Scope, Name, Count) when is_atom(Scope), is_atom(Name), is_integer(Co
 %%% gen_server implementation
 
 -include_lib("kernel/include/logger.hrl").
+%-define (LOG_DEBUG(Fmt, Args), epmd_client:log(Fmt, Args)).
 
 -record(state, {
     %% spg Scope to use
@@ -103,6 +104,7 @@ discover(Scope, Name, Connected) ->
 ensure_bootstrap([]) ->
     ok;
 ensure_bootstrap([{Name, Host, _, Port, _} | Tail]) ->
+    ?LOG_DEBUG("Booting from ~s:~p:~b", [Name, Host, Port]),
     % if bootstrap node is not in the list, do the boot
     Node = list_to_atom(lists:concat([Name, "@", Host])),
     Node =/= node() andalso lists:member(Node, nodes()) =:= false andalso

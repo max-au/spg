@@ -11,8 +11,9 @@
 -export([
     suite/0,
     all/0,
-    init_per_suite/1,
-    end_per_suite/1,
+    groups/0,
+    init_per_group/2,
+    end_per_group/2,
     init_per_testcase/2
 ]).
 
@@ -36,20 +37,29 @@
 suite() ->
     [{timetrap, {seconds, 30}}].
 
-init_per_suite(Config) ->
+init_per_group(docker, Config) ->
     % build docker image
+    % Config entries: "{apps, App | [Apps]}" - applications, in an umbrella release, or just an app
+    % Templates: {"clustermax_test_sup.erl.template", "spg/", "clustermax_sup.erl"} for an umbrella,
+    %   or {"spg_sup.erl.template", "", "spg_sup.erl"} when there is no umbrella app.
+    Config1 = [{apps, spg}, {template, [{"test_sup.erl.template", "src/spg_sup.erl"}]} | Config],
     try
-        Image = build(Config),
-        [{node_count, ?NODE_COUNT}, {image, Image} | Config]
+        Image = build(Config1),
+        [{node_count, ?NODE_COUNT}, {image, Image} | Config1]
     catch
-        _Class:_Reason ->
-            [{node_count, ?NODE_COUNT} | Config]
-    end.
+        Class:Reason:Stack ->
+            Comment = lists:flatten(io_lib:format("Image was not built, ~s:~p (~120p)", [Class, Reason, Stack])),
+            {skip, Comment}
+    end;
+init_per_group(_, Config) ->
+    Config.
 
-end_per_suite(Config) ->
+end_per_group(docker, Config) ->
     % remove image
     proplists:get_value(image, Config) =/= undefined andalso
         os:cmd("docker rmi " ++ proplists:get_value(image, Config)),
+    Config;
+end_per_group(_, Config) ->
     Config.
 
 init_per_testcase(docker, Config) ->
@@ -62,8 +72,14 @@ init_per_testcase(docker, Config) ->
 init_per_testcase(_, Config) ->
     Config.
 
+groups() ->
+    [
+        {local, [sequential], [local]},
+        {docker, [sequential], [docker]}
+    ].
+
 all() ->
-    [local, docker].
+    [{group, local}, {group, docker}].
 
 %%--------------------------------------------------------------------
 %% Helpers
@@ -96,8 +112,15 @@ docker() ->
 % (d) control node discovers child services
 
 local(Config) ->
-    NodeCount = ?config(node_count, Config),
+    NodeCount = proplists:get_value(node_count, Config, ?NODE_COUNT),
     DataPath = ?config(data_dir, Config),
+
+    Apps = case proplists:get_value(apps, Config, spg) of
+               App0 when is_atom(App0) ->
+                   [App0];
+               List when is_list(List) ->
+                   List
+           end,
 
     SysConfig = lists:concat([" -config ", filename:join(DataPath, "sys.config")]),
 
@@ -118,7 +141,7 @@ local(Config) ->
 
     % start spg scope on the control node
     %  (non-local start that by default, app does it)
-    [start_service(Peer) || Peer <- Nodes],
+    [start_service(Apps, Peer) || Peer <- Nodes],
 
     % run everything through control node, via gen_node RPC
     Result = gen_node:rpc(Control, ?MODULE, smoke_control, [smoke, NodeCount]),
@@ -130,9 +153,9 @@ local(Config) ->
     % now verify if all went well
     ?assertEqual(lists:duplicate(NodeCount, ok), SpgProcs).
 
-start_service(Peer) ->
+start_service(Apps, Peer) ->
     % start spg app
-    {ok, _Apps} = gen_node:rpc(Peer, application, ensure_all_started, [spg]),
+    {ok, _Apps} = gen_node:rpc(Peer, application, ensure_all_started, Apps),
     % locate 'control' service
     {ok, _Pid} = gen_node:rpc(Peer, gen_server, start, [stateless_service, {spg, control, 1, 5000}, []]),
     % locate 'service proc'
@@ -157,8 +180,8 @@ smoke_control(TestCase, NodeCount) ->
     Result.
 
 docker(Config) ->
+    NodeCount = proplists:get_value(node_count, Config, ?NODE_COUNT),
     Image = ?config(image, Config),
-    NodeCount = ?config(node_count, Config),
 
     % control node
     {ok, Control} = docker_node:start_link(control, Image,
@@ -226,21 +249,41 @@ build(Config) ->
     % copy config
     ok = file:make_dir(filename:join(PrivDir, "config")),
     copy_files(DataDir, filename:join(PrivDir, "config"), ["sys.config", "vm.args"]),
-    % copy sources
-    ok = file:make_dir(filename:join(PrivDir, "src")),
-    CodeDir = code:lib_dir(spg, src),
-    {ok, SrcFiles} = file:list_dir(CodeDir),
-    copy_files(CodeDir, filename:join(PrivDir, "src"), SrcFiles),
-    % replace one source...
-    {ok, _} = file:copy(filename:join(DataDir, "test_sup.erl.template"),
-        filename:join([PrivDir, "src", "spg_sup.erl"])),
+    % copy sources, depending on what apps are needed to be copied
+    {Umbrella, Apps} = case ?config(apps, Config) of
+                           List when is_list(List) ->
+                               {"apps/", List};
+                           App ->
+                               {"", [App]}
+                       end,
+    [copy_sources(Umbrella, App, PrivDir) || App <- Apps],
+    % replace templated sources
+    Templated = ?config(template, Config),
+    [{ok, _} = file:copy(filename:join(DataDir, From),
+        filename:join([PrivDir, To])) || {From, To} <- Templated],
     % now build an image
-    Image = "spg",
+    Image = atom_to_list(hd(Apps)),
     Res = os:cmd("docker build " ++ PrivDir ++ " -t " ++ Image ++ ":latest"),
     % check that it was "successfully tagged"
-    Expected = "Successfully tagged spg:latest\n",
+    Expected = lists:concat(["Successfully tagged ", Image, ":latest\n"]),
     Actual = lists:reverse(lists:sublist(lists:reverse(Res), 1, length(Expected))),
-    if Expected == Actual -> Image; true -> ct:pal("Docker output: ~120p", [Res]), undefined end.
+    Expected =/= Actual andalso error({docker, Res}),
+    Image.
+
+copy_sources(Umbrella, App, PrivDir) ->
+    SrcTarget =
+        if Umbrella =/= "" ->
+            ok = file:make_dir(filename:join(PrivDir, Umbrella)),
+            AppDir0 = filename:join([PrivDir, Umbrella, App]),
+            ok = file:make_dir(AppDir0),
+            filename:join([AppDir0, "src"]);
+            true ->
+                filename:join([PrivDir, "src"])
+        end,
+    ok = file:make_dir(SrcTarget),
+    CodeDir = code:lib_dir(App, src),
+    {ok, SrcFiles} = file:list_dir(CodeDir),
+    copy_files(CodeDir, SrcTarget, SrcFiles).
 
 copy_files(From, To, Files) ->
     [{ok, _} = file:copy(filename:join(From, File), filename:join(To, File))

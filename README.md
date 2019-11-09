@@ -134,7 +134,6 @@ Properties:
 
 ## Feature requests
 Feature requests that are being considered (feel free to submit PR implementing any of these):
- * speed up stateful property testing
  * separate in/out queues for remote join/leave casts for improved performance
  * alternative process registry support
  * delayed ‘DOWN’ processing to tolerate short network disruptions
@@ -144,6 +143,9 @@ Feature requests that are being considered (feel free to submit PR implementing 
  * health checks
 
 ## Changelog
+
+Version 1.1.2:
+ - updated stateful property-based test to run multuple instances in parallel
 
 Version 1.1.1:
  - revised tests to allow larger amount of nodes for property-based testing

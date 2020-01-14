@@ -274,11 +274,15 @@ handle_cast(_, _State) ->
 
 % handle local process exit
 handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors = Monitors, nodes = Nodes} = State) when node(Pid) =:= node() ->
-    {{MRef, Groups}, NewMons} = maps:take(Pid, Monitors),
-    [leave_local_group(Scope, Group, Pid) || Group <- Groups],
-    % send update to all nodes
-    broadcast(maps:keys(Nodes), {leave, self(), Pid, Groups}),
-    {noreply, State#state{monitors = NewMons}};
+    case maps:take(Pid, Monitors) of
+	error ->
+	    {noreply, State};
+	{{MRef, Groups}, NewMons} ->
+	    [leave_local_group(Scope, Group, Pid) || Group <- Groups],
+	    % send update to all nodes
+	    broadcast(maps:keys(Nodes), {leave, self(), Pid, Groups}),
+	    {noreply, State#state{monitors = NewMons}}
+    end;
 
 % handle remote node down or leaving overlay network
 handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, nodes = Nodes} = State)  ->

@@ -39,7 +39,8 @@
     missing_scope_join/1,
     disconnected_start/1,
     forced_sync/0, forced_sync/1,
-    group_leave/1
+    group_leave/1,
+    leave_exit_race/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -82,7 +83,7 @@ all() ->
 
 groups() -> 
     [
-        {basic, [parallel], [errors, spg, single]},
+        {basic, [parallel], [errors, spg, single, leave_exit_race]},
         {performance, [sequential], [thundering_herd]},
         {cluster, [parallel], [two, initial, netsplit, trisplit, foursplit,
             exchange, nolocal, double, scope_restart, missing_scope_join,
@@ -169,6 +170,18 @@ errors(_Config) ->
     % kill with call
     {ok, Pid} = gen_server:start({local, second}, spg, [second], []),
     ?assertException(exit, {{badarg, _}, _}, gen_server:call(Pid, garbage, 100)).
+
+leave_exit_race(_Config) ->
+    process_flag(priority, high),
+    F = fun TestIt(0) ->
+		ok;
+	    TestIt(N) ->
+		P = spawn(fun () -> ok end),
+		spg:join(leave_exit_race, test, P),
+		spg:leave(leave_exit_race, test, P),
+		TestIt(N-1)
+	end,
+    F(100).
 
 single() ->
     [{doc, "Tests single node groups"}, {timetrap, {seconds, 5}}].

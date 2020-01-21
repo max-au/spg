@@ -25,6 +25,7 @@
     app/0, app/1,
     spg/1,
     errors/0, errors/1,
+    leave_exit_race/0, leave_exit_race/1,
     single/0, single/1,
     two/1,
     thundering_herd/0, thundering_herd/1,
@@ -82,7 +83,7 @@ all() ->
 
 groups() -> 
     [
-        {basic, [parallel], [errors, spg, single]},
+        {basic, [parallel], [errors, spg, leave_exit_race, single]},
         {performance, [sequential], [thundering_herd]},
         {cluster, [parallel], [two, initial, netsplit, trisplit, foursplit,
             exchange, nolocal, double, scope_restart, missing_scope_join,
@@ -169,6 +170,19 @@ errors(_Config) ->
     % kill with call
     {ok, Pid} = gen_server:start({local, second}, spg, [second], []),
     ?assertException(exit, {{badarg, _}, _}, gen_server:call(Pid, garbage, 100)).
+
+leave_exit_race() ->
+    [{doc, "Tests that spg correctly handles situation when leave and 'DOWN' messages are both in spg queue"}].
+
+leave_exit_race(Config) when is_list(Config) ->
+    process_flag(priority, high),
+    [
+        begin
+            Pid = spawn(fun () -> ok end),
+            spg:join(leave_exit_race, test, Pid),
+            spg:leave(leave_exit_race, test, Pid)
+        end
+        || _ <- lists:seq(1, 100)].
 
 single() ->
     [{doc, "Tests single node groups"}, {timetrap, {seconds, 5}}].

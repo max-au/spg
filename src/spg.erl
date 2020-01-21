@@ -259,8 +259,8 @@ handle_cast({discover, Peer}, #state{scope = Scope, nodes = Nodes} = State) ->
         true ->
             {noreply, State};
         false ->
-            gen_server:cast(Peer, {discover, self()}),
             MRef = monitor(process, Peer),
+            gen_server:cast(Peer, {discover, self()}),
             {noreply, State#state{nodes = Nodes#{Peer => {MRef, #{}}}}}
     end;
 

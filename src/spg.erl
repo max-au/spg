@@ -177,7 +177,9 @@ which_local_groups(Scope) when is_atom(Scope) ->
     %% monitored local processes and groups they joined
     monitors = #{} :: #{pid() => {MRef :: reference(), Groups :: [group()]}},
     %% remote node: scope process monitor and map of groups to pids for fast sync routine
-    nodes = #{} :: #{pid() => {reference(), #{group() => [pid()]}}}
+    nodes = #{} :: #{pid() => {reference(), #{group() => [pid()]}}},
+    %% peer: nodename to peer mapping
+    peers = #{} :: #{atom() => pid()}
 }).
 
 -type state() :: #state{}.
@@ -221,8 +223,8 @@ handle_call(_Request, _From, _S) ->
     {leave, Peer :: pid(), pid() | [pid()], [group()]},
     State :: state()) -> {noreply, state()}.
 
-handle_cast({sync, Peer, Groups}, #state{scope = Scope, nodes = Nodes} = State) ->
-    {noreply, State#state{nodes = handle_sync(Scope, Peer, Nodes, Groups)}};
+handle_cast({sync, Peer, Groups}, #state{} = State) ->
+    {noreply, handle_sync(Peer, Groups, State)};
 
 % remote pid or several pids joining the group
 handle_cast({join, Peer, Group, PidOrPids}, #state{scope = Scope, nodes = Nodes} = State) ->
@@ -252,16 +254,15 @@ handle_cast({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Node
     {noreply, State#state{nodes = Nodes#{Peer => {MRef, NewRemoteMap}}}};
 
 % we're being discovered, let's exchange!
-handle_cast({discover, Peer}, #state{scope = Scope, nodes = Nodes} = State) ->
+handle_cast({discover, Peer}, #state{scope = Scope, nodes = Nodes, peers = Peers} = State) ->
     gen_server:cast(Peer, {sync, self(), all_local_pids(Scope)}),
     % do we know who is looking for us?
     case maps:is_key(Peer, Nodes) of
         true ->
             {noreply, State};
         false ->
-            MRef = monitor(process, Peer),
-            gen_server:cast(Peer, {discover, self()}),
-            {noreply, State#state{nodes = Nodes#{Peer => {MRef, #{}}}}}
+            {noreply, State#state{nodes = Nodes#{Peer => {monitor(process, Peer), #{}}},
+				  peers = Peers#{node(Peer) => Peer}}}
     end;
 
 % what was it?
@@ -286,20 +287,38 @@ handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors 
     end;
 
 % handle remote node down or leaving overlay network
-handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, nodes = Nodes} = State)  ->
-    {{MRef, RemoteMap}, NewNodes} = maps:take(Pid, Nodes),
-    maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
-    {noreply, State#state{nodes = NewNodes}};
+handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, nodes = Nodes, peers = Peers} = State)  ->
+    case maps:take(Pid, Nodes) of
+	{{MRef, RemoteMap}, NewNodes} ->
+	    %% Important that the monitor reference is the same! We
+	    %% might have a new monitor due to a new connection
+	    %% registered in 'nodes' which we do *not* want to clear...
+	    maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
+	    {Pid, NewPeers} = maps:take(node(Pid), Peers),
+	    {noreply, State#state{nodes = NewNodes, peers = NewPeers}};
+	_ ->
+	    %% A late DOWN originating from an old connection...
+	    {noreply, State}
+    end;
 
 % nodedown: ignore, and wait for 'DOWN' signal for monitored process
 handle_info({nodedown, _Node}, State) ->
     {noreply, State};
 
 % nodeup: discover if remote node participates in the overlay network
-handle_info({nodeup, Node}, #state{scope = Scope} = State) ->
+handle_info({nodeup, Node}, #state{scope = Scope, peers = Peers, nodes = Nodes} = State) ->
     gen_server:cast({Scope, Node}, {discover, self()}),
-    {noreply, State};
-
+    case maps:take(Node, Peers) of
+	error ->
+	    {noreply, State};
+	{Peer, NewPeers} ->
+	    %% Clear outdated knowledge about the node. The nodeup
+	    %% comes before anything other on this new connection, so
+	    %% it is safe to clear all previous info from this node.
+	    {{_MRef, RemoteMap}, NewNodes} = maps:take(Peer, Nodes),
+	    maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
+	    {noreply, State#state{nodes = NewNodes, peers = NewPeers}}
+    end;
 handle_info(_Info, _State) ->
     error(badarg).
 
@@ -313,19 +332,20 @@ terminate(_Reason, #state{scope = Scope}) ->
 %% Override all knowledge of the remote node with information it sends
 %%  to local node. Current implementation must do the full table scan
 %%  to remove stale pids (just as for 'nodedown').
-handle_sync(Scope, Peer, Nodes, Groups) ->
+handle_sync(Peer, Groups, #state{scope = Scope, nodes = Nodes, peers = Peers} = State) ->
     % can't use maps:get() because it evaluated 'default' value first,
     %   and in this case monitor() call has side effect.
-    {MRef, RemoteGroups} =
+    {{MRef, RemoteGroups}, NewPeers} =
         case maps:find(Peer, Nodes) of
             error ->
-                {monitor(process, Peer), #{}};
+                {{monitor(process, Peer), #{}}, Peers#{node(Peer) => Peer}};
             {ok, MRef0} ->
-                MRef0
+                {MRef0, Peers}
         end,
     % sync RemoteMap and transform ETS table
     sync_groups(Scope, RemoteGroups, Groups),
-    Nodes#{Peer => {MRef, maps:from_list(Groups)}}.
+    State#state{nodes = Nodes#{Peer => {MRef, maps:from_list(Groups)}},
+		peers = NewPeers}.
 
 sync_groups(Scope, RemoteGroups, []) ->
     % leave all missing groups

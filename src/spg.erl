@@ -287,9 +287,14 @@ handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors 
 
 % handle remote node down or leaving overlay network
 handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, nodes = Nodes} = State)  ->
-    {{MRef, RemoteMap}, NewNodes} = maps:take(Pid, Nodes),
-    maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
-    {noreply, State#state{nodes = NewNodes}};
+    case maps:take(Pid, Nodes) of
+        error ->
+            % this can only happen when leave request and 'DOWN' are in spg queue
+            {noreply, State};
+        {{MRef, RemoteMap}, NewNodes} ->
+            maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
+            {noreply, State#state{nodes = NewNodes}}
+    end;
 
 % nodedown: ignore, and wait for 'DOWN' signal for monitored process
 handle_info({nodedown, _Node}, State) ->

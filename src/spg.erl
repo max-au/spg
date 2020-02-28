@@ -1,47 +1,44 @@
-%%%-------------------------------------------------------------------
-%%% @author Maxim Fedorov <maximfca@gmail.com>
-%%% @doc
-%%% Scalable process groups implementing strong eventual consistency.
-%%%
-%%% Differences (compared to pg2):
-%%%  * non-existent and empty group treated the same (empty list of pids)
-%%%     thus create/1 and delete/1 has no effect (and not implemented),
-%%%     and which_groups() return only non-empty groups
-%%%  * no global lock is taken before making a change to group (relies on
-%%%     operations serialisation through a single process)
-%%%  * all join/leave operations require local process (it's not possible to join
-%%%     a process from a different node)
-%%%
-%%% Reasoning for dropping empty groups:
-%%%  Unlike a process, group does not have originating node. So it's possible
-%%% that during net split one node deletes the group, that still exists for
-%%% another partition. Erlang/OTP will recover the group, as soon as net
-%%% split converges, which is quite unexpected.
-%%%  It is possible to introduce group origin (node that is the owner of
-%%% the group), but production examples do not seem to support the necessity
-%%% of this approach.
-%%%
-%%% Exchange protocol:
-%%%  * when spg process starts, it broadcasts (without trying to connect)
-%%%     'discover' message to all nodes in the cluster
-%%%  * when spg process receives 'discover', it responds with 'sync' message
-%%%     containing list of groups with all local processes, and starts to
-%%%     monitor process that sent 'discover' message (assuming it is a part
-%%%     of an overlay network provided by spg)
-%%%  * every spg process monitors 'nodeup' messages to attempt discovery for
-%%%     nodes that are (re)joining the cluster
-%%%
-%%% Leave/join operations:
-%%%  * processes joining the group are monitored on the local node
-%%%  * when process exits (without leaving groups prior to exit), local
-%%%     instance of spg scoped process detects this and sends 'leave' to
-%%%     all nodes in an overlay network (no remote monitoring done)
-%%%
-%%% @end
+%%-------------------------------------------------------------------
+%% @author Maxim Fedorov <maximfca@gmail.com>
+%% Process Groups with eventually consistent membership.
+%%
+%% Differences (compared to pg2):
+%%  * non-existent and empty group treated the same (empty list of pids),
+%%     thus create/1 and delete/1 have no effect (and not implemented).
+%%     which_groups() return only non-empty groups
+%%  * no cluster lock required, and no dependency on global
+%%  * all join/leave operations require local process (it's not possible to join
+%%     a process from a different node)
+%%  * multi-join: join/leave several processes with a single call
+%%
+%% Why empty groups are not supported:
+%%  Unlike a process, group does not have originating node. So it's possible
+%% that during net split one node deletes the group, that still exists for
+%% another partition. pg2 will recover the group, as soon as net
+%% split converges, which is quite unexpected.
+%%
+%% Exchange protocol:
+%%  * when pg process starts, it broadcasts
+%%     'discover' message to all nodes in the cluster
+%%  * when pg server receives 'discover', it responds with 'sync' message
+%%     containing list of groups with all local processes, and starts to
+%%     monitor process that sent 'discover' message (assuming it is a part
+%%     of an overlay network)
+%%  * every pg process monitors 'nodeup' messages to attempt discovery for
+%%     nodes that are (re)joining the cluster
+%%
+%% Leave/join operations:
+%%  * processes joining the group are monitored on the local node
+%%  * when process exits (without leaving groups prior to exit), local
+%%     instance of pg scoped process detects this and sends 'leave' to
+%%     all nodes in an overlay network (no remote monitoring done)
+%%  * all leave/join operations are serialised through pg server process
+%%
 -module(spg).
 -author("maximfca@gmail.com").
 
-%% API: pg2 replacement
+
+%% API: default scope
 -export([
     start_link/0,
 
@@ -53,8 +50,9 @@
     which_local_groups/0
 ]).
 
-%% API: scoped version for improved concurrency
+%% Scoped API: overlay networks
 -export([
+    start/1,
     start_link/1,
 
     join/3,
@@ -65,7 +63,7 @@
     which_local_groups/1
 ]).
 
-%%% gen_server exports
+%% gen_server callbacks
 -export([
     init/1,
     handle_call/3,
@@ -74,9 +72,7 @@
     terminate/2
 ]).
 
-%% Group name can be any type.
-%% However for performance reasons an atom would be the best choice.
-%% Otherwise ETS will be slower to lookup.
+%% Types
 -type group() :: any().
 
 -define(DEFAULT_SCOPE, ?MODULE).
@@ -84,47 +80,54 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server and links it to calling process.
-%% Used default scope, which is the same as as the module name.
+%% Uses default scope, which is the same as as the module name.
 -spec start_link() -> {ok, pid()} | {error, any()}.
 start_link() ->
     start_link(?DEFAULT_SCOPE).
 
 %% @doc
+%% Starts the server outside of supervision hierarchy.
+-spec start(Scope :: atom()) -> {ok, pid()} | {error, any()}.
+start(Scope) when is_atom(Scope) ->
+    gen_server:start({local, Scope}, ?MODULE, [Scope], []).
+
+%% @doc
 %% Starts the server and links it to calling process.
-%% Scope name is passed as a parameter.
+%% Scope name is supplied.
 -spec start_link(Scope :: atom()) -> {ok, pid()} | {error, any()}.
 start_link(Scope) when is_atom(Scope) ->
     gen_server:start_link({local, Scope}, ?MODULE, [Scope], []).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Joins a single process
+%% Joins a single or a list of processes.
 %% Group is created automatically.
-%% Process must be local to this node.
--spec join(Group :: group(), Pid :: pid() | [pid()]) -> ok.
-join(Group, Pid) ->
-    join(?DEFAULT_SCOPE, Group, Pid).
+%% Processes must be local to this node.
+-spec join(Group :: group(), PidOrPids :: pid() | [pid()]) -> ok.
+join(Group, PidOrPids) ->
+    join(?DEFAULT_SCOPE, Group, PidOrPids).
 
--spec join(Scope :: atom(), Group :: group(), Pid :: pid() | [pid()]) -> ok | already_joined.
-join(Scope, Group, PidOrPids) ->
-    Node = node(),
-    is_list(PidOrPids) andalso [error({nolocal, Pid}) || Pid <- PidOrPids, node(Pid) =/= Node orelse not is_pid(Pid)],
-    gen_server:call(Scope, {join_local, Group, PidOrPids}).
+-spec join(Scope :: atom(), Group :: group(), PidOrPids :: pid() | [pid()]) -> ok.
+join(Scope, Group, PidOrPids) when is_pid(PidOrPids); is_list(PidOrPids) ->
+    ok = ensure_local(PidOrPids),
+    gen_server:call(Scope, {join_local, Group, PidOrPids}, infinity).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Single process leaving the group.
-%% Process must be local to this node.
--spec leave(Group :: group(), Pid :: pid() | [pid()]) -> ok.
-leave(Group, Pid) ->
-    leave(?DEFAULT_SCOPE, Group, Pid).
+%% Single or list of processes leaving the group.
+%% Processes must be local to this node.
+-spec leave(Group :: group(), PidOrPids :: pid() | [pid()]) -> ok.
+leave(Group, PidOrPids) ->
+    leave(?DEFAULT_SCOPE, Group, PidOrPids).
 
--spec leave(Scope :: atom(), Group :: group(), Pid :: pid() | [pid()]) -> ok | not_joined.
+-spec leave(Scope :: atom(), Group :: group(), PidOrPids :: pid() | [pid()]) -> ok | not_joined.
 leave(Scope, Group, PidOrPids) ->
-    Node = node(),
-    is_list(PidOrPids) andalso [error({nolocal, Pid}) || Pid <- PidOrPids, node(Pid) =/= Node orelse not is_pid(Pid)],
-    gen_server:call(Scope, {leave_local, Group, PidOrPids}).
+    ok = ensure_local(PidOrPids),
+    gen_server:call(Scope, {leave_local, Group, PidOrPids}, infinity).
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Returns all processes in a group
 -spec get_members(Group :: group()) -> [pid()].
 get_members(Group) ->
     get_members(?DEFAULT_SCOPE, Group).
@@ -138,6 +141,9 @@ get_members(Scope, Group) ->
             []
     end.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Returns processes in a group, running on local node.
 -spec get_local_members(Group :: group()) -> [pid()].
 get_local_members(Group) ->
     get_local_members(?DEFAULT_SCOPE, Group).
@@ -151,6 +157,9 @@ get_local_members(Scope, Group) ->
             []
     end.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Returns a list of all known groups.
 -spec which_groups() -> [Group :: group()].
 which_groups() ->
     which_groups(?DEFAULT_SCOPE).
@@ -159,6 +168,9 @@ which_groups() ->
 which_groups(Scope) when is_atom(Scope) ->
     [G || [G] <- ets:match(Scope, {'$1', '_', '_'})].
 
+%%--------------------------------------------------------------------
+%% @private
+%% Returns a list of groups that have any local processes joined.
 -spec which_local_groups() -> [Group :: group()].
 which_local_groups() ->
     which_local_groups(?DEFAULT_SCOPE).
@@ -170,7 +182,7 @@ which_local_groups(Scope) when is_atom(Scope) ->
 %%--------------------------------------------------------------------
 %% Internal implementation
 
-%%% gen_server implementation
+%% gen_server implementation
 -record(state, {
     %% ETS table name, and also the registered process name (self())
     scope :: atom(),
@@ -185,7 +197,7 @@ which_local_groups(Scope) when is_atom(Scope) ->
 -spec init([Scope :: atom()]) -> {ok, state()}.
 init([Scope]) ->
     ok = net_kernel:monitor_nodes(true),
-    % discover all nodes in the cluster
+    %% discover all nodes in the cluster
     broadcast([{Scope, Node} || Node <- nodes()], {discover, self()}),
     Scope = ets:new(Scope, [set, protected, named_table, {read_concurrency, true}]),
     {ok, #state{scope = Scope}}.
@@ -224,17 +236,41 @@ handle_call(_Request, _From, _S) ->
 handle_cast({sync, Peer, Groups}, #state{scope = Scope, nodes = Nodes} = State) ->
     {noreply, State#state{nodes = handle_sync(Scope, Peer, Nodes, Groups)}};
 
-% remote pid or several pids joining the group
-handle_cast({join, Peer, Group, PidOrPids}, #state{scope = Scope, nodes = Nodes} = State) ->
+%% Migration clauses: originally, spg implemented some events via gen_server:cast,
+%%  while it was not necessary.
+%% These migration clauses will be removed when spg lives through another major version.
+handle_cast({join, Peer, Group, PidOrPids}, State) ->
+    handle_info({join, Peer, Group, PidOrPids}, State);
+
+handle_cast({leave, Peer, PidOrPids, Groups}, State) ->
+    handle_info({leave, Peer, PidOrPids, Groups}, State);
+
+handle_cast({discover, Peer}, State) ->
+    handle_info({discover, Peer}, State);
+%% ^^^
+%% Compatibility migration clauses.
+
+handle_cast(_, _State) ->
+    error(badarg).
+
+-spec handle_info(
+    {discover, Peer :: pid()} |
+    {join, Peer :: pid(), group(), pid() | [pid()]} |
+    {leave, Peer :: pid(), pid() | [pid()], [group()]} |
+    {'DOWN', reference(), process, pid(), term()} |
+    {nodedown, node()} | {nodeup, node()}, State :: state()) -> {noreply, state()}.
+
+%% remote pid or several pids joining the group
+handle_info({join, Peer, Group, PidOrPids}, #state{scope = Scope, nodes = Nodes} = State) ->
     join_remote(Scope, Group, PidOrPids),
     % store remote group => pids map for fast sync operation
     {MRef, RemoteGroups} = maps:get(Peer, Nodes),
     NewRemoteGroups = join_remote_map(Group, PidOrPids, RemoteGroups),
     {noreply, State#state{nodes = Nodes#{Peer => {MRef, NewRemoteGroups}}}};
 
-% remote pid leaving (multiple groups at once)
-handle_cast({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Nodes} = State) ->
-    leave_remote(Scope, PidOrPids, Groups),
+%% remote pid leaving (multiple groups at once)
+handle_info({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Nodes} = State) ->
+    _ = leave_remote(Scope, PidOrPids, Groups),
     {MRef, RemoteMap} = maps:get(Peer, Nodes),
     NewRemoteMap = lists:foldl(
         fun (Group, Acc) ->
@@ -251,53 +287,45 @@ handle_cast({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Node
         end, RemoteMap, Groups),
     {noreply, State#state{nodes = Nodes#{Peer => {MRef, NewRemoteMap}}}};
 
-% we're being discovered, let's exchange!
-handle_cast({discover, Peer}, #state{scope = Scope, nodes = Nodes} = State) ->
+%% we're being discovered, let's exchange!
+handle_info({discover, Peer}, #state{scope = Scope, nodes = Nodes} = State) ->
     gen_server:cast(Peer, {sync, self(), all_local_pids(Scope)}),
-    % do we know who is looking for us?
+    %% do we know who is looking for us?
     case maps:is_key(Peer, Nodes) of
         true ->
             {noreply, State};
         false ->
             MRef = monitor(process, Peer),
-            gen_server:cast(Peer, {discover, self()}),
+            erlang:send(Peer, {discover, self()}, [noconnect]),
             {noreply, State#state{nodes = Nodes#{Peer => {MRef, #{}}}}}
     end;
 
-% what was it?
-handle_cast(_, _State) ->
-    error(badarg).
-
--spec handle_info({'DOWN', reference(), process, pid(), term()} |
-                  {nodedown, node()} |
-                  {nodeup, node()}, State :: state()) -> {noreply, state()}.
-
-% handle local process exit
+%% handle local process exit
 handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, monitors = Monitors, nodes = Nodes} = State) when node(Pid) =:= node() ->
     case maps:take(Pid, Monitors) of
         error ->
-            % this can only happen when leave request and 'DOWN' are in spg queue
+            %% this can only happen when leave request and 'DOWN' are in pg queue
             {noreply, State};
         {{MRef, Groups}, NewMons} ->
             [leave_local_group(Scope, Group, Pid) || Group <- Groups],
-            % send update to all nodes
+            %% send update to all nodes
             broadcast(maps:keys(Nodes), {leave, self(), Pid, Groups}),
             {noreply, State#state{monitors = NewMons}}
     end;
 
-% handle remote node down or leaving overlay network
+%% handle remote node down or leaving overlay network
 handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, nodes = Nodes} = State)  ->
     {{MRef, RemoteMap}, NewNodes} = maps:take(Pid, Nodes),
-    maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
+    _ = maps:map(fun (Group, Pids) -> leave_remote(Scope, Pids, [Group]) end, RemoteMap),
     {noreply, State#state{nodes = NewNodes}};
 
-% nodedown: ignore, and wait for 'DOWN' signal for monitored process
+%% nodedown: ignore, and wait for 'DOWN' signal for monitored process
 handle_info({nodedown, _Node}, State) ->
     {noreply, State};
 
-% nodeup: discover if remote node participates in the overlay network
+%% nodeup: discover if remote node participates in the overlay network
 handle_info({nodeup, Node}, #state{scope = Scope} = State) ->
-    gen_server:cast({Scope, Node}, {discover, self()}),
+    {Scope, Node} ! {discover, self()},
     {noreply, State};
 
 handle_info(_Info, _State) ->
@@ -310,12 +338,27 @@ terminate(_Reason, #state{scope = Scope}) ->
 %%--------------------------------------------------------------------
 %% Internal implementation
 
+%% Ensures argument is either a node-local pid or a list of such, or it throws an error
+ensure_local(Pid) when is_pid(Pid), node(Pid) =:= node() ->
+    ok;
+ensure_local(Pids) when is_list(Pids) ->
+    lists:foreach(
+        fun
+            (Pid) when is_pid(Pid), node(Pid) =:= node() ->
+                ok;
+            (Bad) ->
+                error({nolocal, Bad})
+        end, Pids);
+ensure_local(Bad) ->
+    error({nolocal, Bad}).
+
+
 %% Override all knowledge of the remote node with information it sends
 %%  to local node. Current implementation must do the full table scan
 %%  to remove stale pids (just as for 'nodedown').
 handle_sync(Scope, Peer, Nodes, Groups) ->
-    % can't use maps:get() because it evaluated 'default' value first,
-    %   and in this case monitor() call has side effect.
+    %% can't use maps:get() because it evaluates 'default' value first,
+    %%   and in this case monitor() call has side effect.
     {MRef, RemoteGroups} =
         case maps:find(Peer, Nodes) of
             error ->
@@ -323,12 +366,12 @@ handle_sync(Scope, Peer, Nodes, Groups) ->
             {ok, MRef0} ->
                 MRef0
         end,
-    % sync RemoteMap and transform ETS table
-    sync_groups(Scope, RemoteGroups, Groups),
+    %% sync RemoteMap and transform ETS table
+    _ = sync_groups(Scope, RemoteGroups, Groups),
     Nodes#{Peer => {MRef, maps:from_list(Groups)}}.
 
 sync_groups(Scope, RemoteGroups, []) ->
-    % leave all missing groups
+    %% leave all missing groups
     [leave_remote(Scope, Pids, [Group]) || {Group, Pids} <- maps:to_list(RemoteGroups)];
 sync_groups(Scope, RemoteGroups, [{Group, Pids} | Tail]) ->
     case maps:take(Group, RemoteGroups) of
@@ -336,7 +379,7 @@ sync_groups(Scope, RemoteGroups, [{Group, Pids} | Tail]) ->
             sync_groups(Scope, NewRemoteGroups, Tail);
         {OldPids, NewRemoteGroups} ->
             [{Group, AllOldPids, LocalPids}] = ets:lookup(Scope, Group),
-            % should be really rare...
+            %% should be really rare...
             AllNewPids = Pids ++ AllOldPids -- OldPids,
             true = ets:insert(Scope, {Group, AllNewPids, LocalPids}),
             sync_groups(Scope, NewRemoteGroups, Tail);
@@ -420,7 +463,7 @@ leave_local_group(Scope, Group, Pid) when is_pid(Pid) ->
         [{Group, All, Local}] ->
             ets:insert(Scope, {Group, lists:delete(Pid, All), lists:delete(Pid, Local)});
         [] ->
-            % rare race condition when 'DOWN' from monitor stays in msg queue while process is leave-ing.
+            %% rare race condition when 'DOWN' from monitor stays in msg queue while process is leave-ing.
             true
     end;
 leave_local_group(Scope, Group, Pids) ->
@@ -463,17 +506,15 @@ leave_remote(Scope, Pids, Groups) ->
         Group <- Groups].
 
 all_local_pids(Scope) ->
-    % selector: ets:fun2ms(fun({N,_,L}) when L =/=[] -> {N,L}end).
+    %% selector: ets:fun2ms(fun({N,_,L}) when L =/=[] -> {N,L}end).
     ets:select(Scope, [{{'$1','_','$2'},[{'=/=','$2',[]}],[{{'$1','$2'}}]}]).
 
-% Replacement for gen_server:abcast with 'noconnect' flag set.
-broadcast(Pids, Msg) ->
-    do_broadcast(Pids, {'$gen_cast', Msg}).
-
-do_broadcast([], _Msg) ->
+%% Works as gen_server:abcast(), but accepts a list of processes
+%%   instead of nodes list.
+broadcast([], _Msg) ->
     ok;
-do_broadcast([Dest | Tail], Msg) ->
-    % do not use 'nosuspend' here, as it will lead to missing
-    %   join/leave messages when dist buffer is full
+broadcast([Dest | Tail], Msg) ->
+    %% do not use 'nosuspend', as it will lead to missing
+    %%   join/leave messages when dist buffer is full
     erlang:send(Dest, Msg, [noconnect]),
-    do_broadcast(Tail, Msg).
+    broadcast(Tail, Msg).

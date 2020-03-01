@@ -87,9 +87,9 @@
 -define (LOCALHOST, {127, 0, 0, 1}).
 
 % Socket connect
--define (CONNECT_TIMEOUT, 5000).
+-define (CONNECT_TIMEOUT, 10000).
 % Socket accept timeout
--define (ACCEPT_TIMEOUT, 5000).
+-define (ACCEPT_TIMEOUT, 10000).
 % Kill timeout: how long to wait for slave to be killed
 -define (KILL_TIMEOUT, 3000).
 % Synchronous RPC timeout (for connect/disconnect node)
@@ -273,6 +273,9 @@ handle_info({tcp, Socket, Data}, #state{socket = Socket} = State) ->
     end,
     {noreply, State};
 
+handle_info({Port, {exit_status,0}}, #state{port = Port} = State) ->
+    {noreply, State#state{port = undefined}};
+
 handle_info({Port, {data, {eol, Data}}}, #state{port = Port, output = Output} = State) ->
     {noreply, State#state{output = queue:in(Data, Output)}};
 
@@ -452,7 +455,13 @@ terminate_default(#state{socket = undefined} = State, close) ->
 % socket may be connected
 terminate_default(#state{socket = Socket} = State, close) ->
     catch gen_tcp:close(Socket),
-    State#state{socket = undefined};
+    case wait_exit(State#state.os_pid, erlang:system_time(millisecond) + ?KILL_TIMEOUT) of
+        ok ->
+            catch erlang:port_close(State#state.port),
+            State#state{socket = undefined, os_pid = undefined, port = undefined, stop_methods = []};
+        _ ->
+            State#state{socket = undefined}
+    end;
 
 % port is not connected
 terminate_default(#state{port = undefined} = State, port) ->
@@ -485,13 +494,14 @@ terminate_default(#state{os_pid = OsPid} = State, kill) ->
 
 wait_exit(OsPid, Timelimit) ->
     Now = erlang:system_time(millisecond),
-    case signal(0, OsPid, ?KILL_TIMEOUT) of
-        0 when Now < Timelimit ->
+    case filelib:is_dir(lists:concat(["/proc/", OsPid])) of
+        true when Now < Timelimit ->
+            erlang:display({OsPid, "running"}),
             timer:sleep(50), % may need an adjustment
             wait_exit(OsPid, Timelimit);
-        0 ->
+        true ->
             timeout;
-        _NonZero ->
+        false ->
             ok
     end.
 

@@ -1,10 +1,10 @@
-%%%-------------------------------------------------------------------
-%%% @author Maxim Fedorov <maximfca@gmail.com>
-%%% @doc
-%%%     Scalable Process Groups cluster-wide test, uses PropEr stateful
-%%% testing routine.
-%%% @end
-%%% -------------------------------------------------------------------
+%%-------------------------------------------------------------------
+%% @author Maxim Fedorov <maximfca@gmail.com>
+%% @doc
+%% Scalable Process Groups cluster-wide test, uses PropEr stateful
+%%  testing routine.
+%% @end
+%% -------------------------------------------------------------------
 -module(spg_cluster_SUITE).
 -author("maximfca@gmail.com").
 
@@ -30,7 +30,7 @@
     postcondition/3
 ]).
 
-% PropEr shims
+%% PropEr shims
 -export([
     start_node/0,
     stop_node/1,
@@ -46,9 +46,10 @@
     get_local_members/3
 ]).
 
--include_lib("proper/include/proper.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+
+-include_lib("proper/include/proper.hrl").
 
 init_per_suite(Config) ->
     spg_SUITE:init_per_suite(Config).
@@ -60,78 +61,65 @@ all() ->
     [spg_sequential].
 
 %%--------------------------------------------------------------------
-%% PropEr shims (wrapping around spg)
+%% PropEr shims implementation
 
-%% 4 nodes in total (excluding self)
--define (PEER_COUNT, 3).
+%% A test case runs up to 17 nodes in total, sharing a single scope.
+%% Actual amount is determined on test case startup.
+-define (MAX_PEER_COUNT, 16).
 
 %% 4 groups - to provoke collisions
 -define(GROUPS, [one, two, three, four]).
 
-forever() ->
-    fun() -> receive after infinity -> ok end end.
+rpc({Node, _Sock}, _M, _F, _A) when Node =:= node() ->
+    error({local, Node});
+rpc({_Node, Sock}, M, F, A) ->
+    catch gen_node:rpc(Sock, M, F, A).
 
 start_node() ->
-    % generate node name based on os pid & self pid + time
+    %% generate node name based on os pid & self pid + time
     Name = scope_name(integer_to_list(erlang:system_time(microsecond))),
-    {ok, Peer} = local_node:start_link(Name, #{auto_connect => true,
-        connection => {undefined, undefined},
+    {ok, Peer} = local_node:start_link(Name, #{auto_connect => false,
+        connection => {undefined, undefined}, detached => true,
         connect_all => false, code_path => [filename:dirname(code:which(spg))]}),
     Node = gen_node:get_node(Peer),
     {Node, Peer}.
 
-stop_node({_, Node, Socket}) when Node =/= node() ->
-    gen_node:stop(Socket),
-    true.
+stop_node({_Node, Control}) ->
+    ok =:= gen_node:stop(Control).
 
 start_scope(Access, Scope) ->
-    impl(Access, gen_server, start, [{local, Scope}, spg, [Scope], []]).
+    rpc(Access, spg, start, [Scope]).
 
 stop_scope(Access, Scope) ->
-    impl(Access, gen_server, stop, [Scope]).
+    rpc(Access, gen_server, stop, [Scope]).
 
-% spawn: do not use 'impl', as 'spawn' does not need rpc
-start_proc({direct, _, _}) ->
-    spawn(forever());
-start_proc({true, Node, _}) ->
-    erlang:spawn(Node, forever());
-start_proc({false, _, Socket}) ->
-    gen_node:rpc(Socket, erlang, spawn, [forever()]).
+start_proc(Access) ->
+    rpc(Access, erlang, spawn, [fun() -> receive after infinity -> ok end end]).
 
 stop_proc(Access, Pid) ->
-    impl(Access, spg_SUITE, stop_proc, [Pid]).
+    rpc(Access, spg_SUITE, stop_proc, [Pid]).
 
 connect_peer(Access, NodeTwo) ->
-    impl(Access, net_kernel, connect_node, [NodeTwo]).
+    rpc(Access, net_kernel, connect_node, [NodeTwo]),
+    State = rpc(Access, sys, get_state, [net_kernel]),
+    ?assertEqual(state, element(1, State)).
 
 disconnect_peer(Access, NodeTwo) ->
-    impl(Access, erlang, disconnect_node, [NodeTwo]).
+    rpc(Access, erlang, disconnect_node, [NodeTwo]),
+    State = rpc(Access, sys, get_state, [net_kernel]),
+    ?assertEqual(state, element(1, State)).
 
 join_group(Access, Scope, PidOrPids, Group) ->
-    impl(Access, spg, join, [Scope, Group, PidOrPids]).
+    rpc(Access, spg, join, [Scope, Group, PidOrPids]).
 
 leave_group(Access, Scope, PidOrPids, Group) ->
-    impl(Access, spg, leave, [Scope, Group, PidOrPids]).
+    rpc(Access, spg, leave, [Scope, Group, PidOrPids]).
 
 get_members(Access, Scope, Group) ->
-    impl(Access, spg, get_members, [Scope, Group]).
+    rpc(Access, spg, get_members, [Scope, Group]).
 
 get_local_members(Access, Scope, Group) ->
-    impl(Access, spg, get_local_members, [Scope, Group]).
-
--define (RPC_TIMEOUT, 5000).
-
-impl({direct, _, _}, M, F, A) ->
-    catch erlang:apply(M, F, A);
-impl({true, Node, _}, M, F, A) ->
-    case rpc:call(Node, M, F, A, ?RPC_TIMEOUT) of
-        {badrpc, Reason} ->
-            Reason;
-        Other ->
-            Other
-    end;
-impl({false, _, Socket}, M, F, A) ->
-    catch gen_node:rpc(Socket, M, F, A).
+    rpc(Access, spg, get_local_members, [Scope, Group]).
 
 
 %%--------------------------------------------------------------------
@@ -139,32 +127,32 @@ impl({false, _, Socket}, M, F, A) ->
 
 %% Single node state (bar name, which is the map key)
 -record(node, {
-    % scope up or not?
+    %% scope up or not?
     scope = false :: boolean(),
-    % controlling (rpc) socket
-    socket :: undefined | gen_tcp:socket(),
-    % dist connections from this node
+    %% node controller process
+    socket :: gen_tcp:socket(),
+    %% dist connections from this node
     links = [] :: [node()],
-    % local pids of the node, and groups it joined
+    %% local pids of the node, and groups it joined
     procs = #{} :: #{pid() => [any()]}
 }).
 
 -record(state, {
     scope_name :: atom(),
-    nodes :: #{node() => #node{}}
+    peer_count :: pos_integer(),
+    nodes = #{} :: #{node() => #node{}}
 }).
 
 %%--------------------------------------------------------------------
 %% PropEr state machine
 
 scope_name(Extra) ->
-    % form scope name as OS pid + own pid
+    %% form scope name as OS pid + own pid
     [_, Pid, _] = string:split(io_lib:format("~p", [self()]), ".", all),
-    % result should be like 'proper_12345_123'
-    list_to_atom(lists:flatten(io_lib:format("scope_~s_~s_~s", [os:getpid(), Pid, Extra]))).
+    list_to_atom(lists:concat(["scope_", os:getpid(), "_", Pid, "-", Extra])).
 
 initial_state() ->
-    #state{scope_name = scope_name(""), nodes = #{node() => #node{}}}.
+    #state{scope_name = scope_name(""), peer_count = erlang:phash2(self(), ?MAX_PEER_COUNT) + 2}.
 
 proc_exist(Name, Nodes, Pid) ->
     case maps:find(Name, Nodes) of
@@ -182,46 +170,46 @@ procs_exist(Name, Nodes, Pids) ->
             false
     end.
 
-% repeat command generation logic.
-% Yes, it is highly desirable to use something like hypothesis based testing,
-%   but so far there is no convenient tool to do that, hence, let's just repeat the logic.
-precondition(#state{nodes = Nodes}, {call, ?MODULE, start_node, []}) ->
-    map_size(Nodes) < ?PEER_COUNT;
-precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_node, [{_, Name, _}]}) ->
-    Name =/= node() andalso is_map_key(Name, Nodes);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, start_scope, [{_, Name, _}, _Scope]}) ->
+%% repeat command generation logic.
+%% Yes, it is highly desirable to use something like hypothesis based testing,
+%%   but so far there is no convenient tool to do that, hence, let's just repeat the logic.
+precondition(#state{nodes = Nodes, peer_count = Count}, {call, ?MODULE, start_node, []}) ->
+    map_size(Nodes) < Count;
+precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_node, [{Name, _}]}) ->
     is_map_key(Name, Nodes);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_scope, [{_, Name, _}, _Scope]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, start_scope, [{Name, _}, _Scope]}) ->
     is_map_key(Name, Nodes);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, start_proc, [{_, Name, _}]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_scope, [{Name, _}, _Scope]}) ->
     is_map_key(Name, Nodes);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_proc, [{_, Name, _}, Pid]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, start_proc, [{Name, _}]}) ->
+    is_map_key(Name, Nodes);
+precondition(#state{nodes = Nodes}, {call, ?MODULE, stop_proc, [{Name, _}, Pid]}) ->
     proc_exist(Name, Nodes, Pid);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, connect_peer, [{_, Name1, _}, Name2]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, connect_peer, [{Name1, _}, Name2]}) ->
     case maps:find(Name1, Nodes) of
         {ok, #node{links = Links}} ->
             lists:member(Name2, Links) =:= false;
         _ ->
             false
     end;
-precondition(#state{nodes = Nodes}, {call, ?MODULE, disconnect_peer, [{_, Name1, _}, Name2]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, disconnect_peer, [{Name1, _}, Name2]}) ->
     case maps:find(Name1, Nodes) of
         {ok, #node{links = Links}} ->
             lists:member(Name2, Links);
         _ ->
             false
     end;
-precondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{_, Name, _}, _Scope, Pids, _Group]}) when is_list(Pids) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{Name, _}, _Scope, Pids, _Group]}) when is_list(Pids) ->
     procs_exist(Name, Nodes, Pids);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{_, Name, _}, _Scope, Pid, _Group]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{Name, _}, _Scope, Pid, _Group]}) ->
     proc_exist(Name, Nodes, Pid);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{_, Name, _}, _Scope, Pids, _Group]}) when is_list(Pids) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{Name, _}, _Scope, Pids, _Group]}) when is_list(Pids) ->
     procs_exist(Name, Nodes, Pids);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{_, Name, _}, _Scope, Pid, _Group]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{Name, _}, _Scope, Pid, _Group]}) ->
     proc_exist(Name, Nodes, Pid);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, get_members, [{_, Name, _}, _Scope, _Group]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, get_members, [{Name, _}, _Scope, _Group]}) ->
     is_map_key(Name, Nodes);
-precondition(#state{nodes = Nodes}, {call, ?MODULE, get_local_members, [{_, Name, _}, _Scope, _Group]}) ->
+precondition(#state{nodes = Nodes}, {call, ?MODULE, get_local_members, [{Name, _}, _Scope, _Group]}) ->
     is_map_key(Name, Nodes).
 
 test_scope_up(Nodes, Name, Res) ->
@@ -232,23 +220,26 @@ test_scope_up(Nodes, Name, Res) ->
         {true, not_joined} ->
             %% TODO: implement not_joined state for leave_group call
             true;
+        {false, {badrpc, {'EXIT', noproc}}} ->
+            true;
+        {false, {badrpc, {'EXIT', {noproc, _}}}} ->
+            true;
         {false, {'EXIT', noproc}} ->
             true;
         {false, {'EXIT', {noproc, _}}} ->
             true;
-        {false, {noproc, _}} ->
-            true;
         _ ->
+            io:fwrite(user, "Unexpected: scope up: ~s with result = ~p on ~p ~n", [ScopeUp, Res, Name]),
             false
     end.
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{_, Name, _}, _Scope, _Pid, _Group]}, Res) ->
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, join_group, [{Name, _}, _Scope, _Pid, _Group]}, Res) ->
     test_scope_up(Nodes, Name, Res);
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{_, Name, _}, _Scope, _Pid, _Group]}, Res) ->
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, leave_group, [{Name, _}, _Scope, _Pid, _Group]}, Res) ->
     test_scope_up(Nodes, Name, Res);
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, start_scope, [{_, Name, _}, _Scope]}, Res) ->
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, start_scope, [{Name, _}, _Scope]}, Res) ->
     #{Name := #node{scope = ScopeUp}} = Nodes,
     case {ScopeUp, Res} of
         {true, {error, {already_started, Pid}}} when is_pid(Pid) ->
@@ -259,24 +250,33 @@ postcondition(#state{nodes = Nodes}, {call, ?MODULE, start_scope, [{_, Name, _},
             false
     end;
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, stop_scope, [{_, Name, _}, _Scope]}, Res) ->
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, stop_scope, [{Name, _}, _Scope]}, Res) ->
     test_scope_up(Nodes, Name, Res);
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_local_members, [{_, Name, _}, _Scope, Group]}, Res) ->
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_local_members, [{Name, _} = Access, Scope, Group]}, Res) ->
     #{Name := #node{procs = Procs, scope = ScopeUp}} = Nodes,
     case ScopeUp of
         false ->
             Res =:= [];
         true ->
-            Local = maps:fold(
+            Local = lists:sort(maps:fold(
                 fun (Pid, Groups, Acc) ->
                     [Pid || G <- Groups, G =:= Group] ++ Acc
-                end, [], Procs),
-            lists:sort(Res) =:= lists:sort(Local)
+                end, [], Procs)),
+            %% optimistic case
+            case lists:sort(Res) of
+                Local ->
+                    true;
+                _Actual ->
+                    %% optimistic didn't work, go sync and try again
+                    rpc(Access, sys, get_log, [Scope]),
+                    Synced = lists:sort(rpc(Access, spg, get_local_members, [Scope, Group])),
+                    Synced =:= Local
+            end
     end;
 
-postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_members, [{_, Name, _} = Node0, Scope, Group]}, Res) ->
-    % collect this group from all connected nodes
+postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_members, [{Name, _} = Node0, Scope, Group]}, Res) ->
+    %% collect this group from all connected nodes
     #{Name := #node{links = Links, scope = ScopeUp}} = Nodes,
     case ScopeUp of
         false ->
@@ -284,30 +284,40 @@ postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_members, [{_, Name, _} 
         true ->
             Global = lists:sort(lists:foldl(
                 fun (N, Acc) ->
-                    #{N := #node{procs = Procs}} = Nodes,
-                    maps:fold(
-                        fun (Pid, Groups, Acc1) ->
-                            [Pid || G <- Groups, G =:= Group] ++ Acc1
-                        end,
-                        Acc, Procs)
+                    #node{procs = Procs, scope = IsRemoteUp} = maps:get(N, Nodes),
+                    case IsRemoteUp of
+                        true ->
+                            maps:fold(
+                                fun (Pid, Groups, Acc1) ->
+                                    [Pid || G <- Groups, G =:= Group] ++ Acc1
+                                end,
+                                Acc, Procs);
+                        false ->
+                            Acc
+                    end
                 end, [], [Name | Links])),
             SortedRes = lists:sort(Res),
-            SortedRes == Global orelse retry_get_members(Node0, Scope, Group, Global, 10)
+            %%
+            SortedRes == Global orelse retry_get_members([Name | Links], Node0, Scope, Group, Global, 20)
     end;
 
 postcondition(_State, _Cmd, _Res) ->
     true.
 
-retry_get_members(_Node, _Scope, _Group, _Expected, 0) ->
+retry_get_members(Nodes, Node, Scope, Group, Expected, 0) ->
+    Res = lists:sort(get_members(Node, Scope, Group)),
+    Missing = Expected -- Res, Extra = Res -- Expected,
+    Res =/= Expected andalso
+        io:fwrite(user, "get_members failed: ~nMissing: ~p~nExtra: ~p~nNodes: ~p~nExpected nodes: ~p~n",
+            [Missing, Extra, rpc(Node, erlang, nodes, []), Nodes]),
     false;
-retry_get_members(Node, Scope, Group, Expected, Left) ->
+retry_get_members(Nodes, Node, Scope, Group, Expected, Left) ->
     timer:sleep(5),
     Res = lists:sort(get_members(Node, Scope, Group)),
-    % erlang:display({"Global RETRY: Have: ", Res, "Expect: ", Expected, " in group ", Group}),
-    Res == Expected orelse retry_get_members(Node, Scope, Group, Expected, Left - 1).
+    Res == Expected orelse retry_get_members(Nodes, Node, Scope, Group, Expected, Left - 1).
 
 %% generates commands to bring link up or down
-links({_, Self, _} = Access, Nodes, Existing) ->
+links({Self, _} = Access, Nodes, Existing) ->
     [
         {call, ?MODULE,
             case lists:member(N, Existing) of
@@ -331,11 +341,6 @@ procs(Access, Scope, Procs) ->
         {call, ?MODULE, leave_group, [Access, Scope, list(oneof(Procs)), elements(?GROUPS)]}
     ].
 
-access(Node, _) when Node =:= node() ->
-    {direct, Node, undefined};
-access(Node, #node{socket = Socket, links = Links}) ->
-    {lists:member(node(), Links), Node, Socket}.
-
 basic(Access, Scope) ->
     [
         {call, ?MODULE, start_proc, [Access]},
@@ -346,18 +351,18 @@ basic(Access, Scope) ->
     ].
 
 %% original idea was to throw in a list of nodes X list of ops, but... it won't work,
-%   because of different sockets bindings, proc ids etc.
-command(#state{scope_name = Scope, nodes = Nodes0}) ->
-    % there could be a chance to start one more node
-    StartNode = [{call, ?MODULE, start_node, []} || map_size(Nodes0) < ?PEER_COUNT],
+%%  because of different sockets bindings, proc ids etc.
+command(#state{scope_name = Scope, nodes = Nodes0, peer_count = PeerCount}) ->
+    %% there could be a chance to start one more node
+    StartNode = [{call, ?MODULE, start_node, []} || map_size(Nodes0) < PeerCount],
 
     %% generate all possible commands for all nodes:
     Nodes = maps:keys(Nodes0),
     Commands = StartNode ++ maps:fold(
-        fun (Node, #node{links = Links, procs = Procs} = Info, Cmds) ->
-                Access = access(Node, Info),
+        fun (Node, #node{links = Links, procs = Procs, socket = Socket}, Cmds) ->
+                Access = {Node, Socket},
                 [
-                    {call, ?MODULE, stop_node, [Access]} || node() =/= Node
+                    {call, ?MODULE, stop_node, [Access]}
                 ] ++
                     basic(Access, Scope) ++ links(Access, Nodes, Links) ++
                         procs(Access, Scope, maps:keys(Procs)) ++ Cmds
@@ -366,42 +371,38 @@ command(#state{scope_name = Scope, nodes = Nodes0}) ->
 
 next_state(#state{nodes = Nodes} = State, Res, {call, ?MODULE, start_node, []}) ->
     Name = {call,erlang,element,[1, Res]},
-    % also change master node state
-    Nodes1 = maps:update_with(node(),
-        fun (#node{links = Links} = Master) ->
-            Master#node{links = [Name | Links]}
-        end, Nodes),
-    Nodes2 = Nodes1#{Name => #node{socket = {call,erlang,element,[2, Res]}, links = [node()]}},
+    %% start with no links
+    Nodes2 = Nodes#{Name => #node{socket = {call,erlang,element,[2, Res]}, links = []}},
     State#state{nodes = Nodes2};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_node, [{_, Name, _}]}) ->
-    % remove links from all nodes
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_node, [{Name, _}]}) ->
+    %% remove links from all nodes
     Nodes1 = maps:map(
         fun (_N, #node{links = Links} = Node) ->
             Node#node{links = lists:delete(Name, Links)}
         end, Nodes),
     State#state{nodes = maps:remove(Name, Nodes1)};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, start_scope, [{_, Name, _}, _Scope]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, start_scope, [{Name, _}, _Scope]}) ->
     #{Name := Node} = Nodes,
     State#state{nodes = Nodes#{Name => Node#node{scope = true}}};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_scope, [{_, Name, _}, _Scope]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_scope, [{Name, _}, _Scope]}) ->
     #{Name := Node} = Nodes,
-    % all node local procs lose group membership on this node, and on other nodes too
-    % However processes stay alive (and can re-join)
+    %% all node local procs lose group membership on this node, and on other nodes too
+    %% However processes stay alive (and can re-join)
     RunningProcs = maps:map(fun (_, _) -> [] end, Node#node.procs),
     State#state{nodes = Nodes#{Name => Node#node{scope = false, procs = RunningProcs}}};
 
-next_state(#state{nodes = Nodes} = State, Res, {call, ?MODULE, start_proc, [{_, Name, _}]}) ->
+next_state(#state{nodes = Nodes} = State, Res, {call, ?MODULE, start_proc, [{Name, _}]}) ->
     #{Name := Node} = Nodes,
     State#state{nodes = Nodes#{Name => Node#node{procs = maps:put(Res, [], Node#node.procs)}}};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_proc, [{_, Name, _}, Pid]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, stop_proc, [{Name, _}, Pid]}) ->
     #{Name := Node} = Nodes,
     State#state{nodes = Nodes#{Name => Node#node{procs = maps:remove(Pid, Node#node.procs)}}};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, connect_peer, [{_, Name1, _}, Name2]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, connect_peer, [{Name1, _}, Name2]}) ->
     #{Name1 := Node1} = Nodes,
     #{Name2 := Node2} = Nodes,
     State#state{nodes = Nodes#{
@@ -409,7 +410,7 @@ next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, connect_peer, [{
         Name2 => Node2#node{links = [Name1 | Node2#node.links]}
     }};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, disconnect_peer, [{_, Name1, _}, Name2]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, disconnect_peer, [{Name1, _}, Name2]}) ->
     #{Name1 := Node1} = Nodes,
     #{Name2 := Node2} = Nodes,
     State#state{nodes = Nodes#{
@@ -417,7 +418,7 @@ next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, disconnect_peer,
         Name2 => Node2#node{links = lists:delete(Name1, Node2#node.links)}
     }};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{_, Name, _}, _Scope, Pids, Group]}) when is_list(Pids) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{Name, _}, _Scope, Pids, Group]}) when is_list(Pids) ->
     #{Name := #node{scope = ScopeUp} = Node} = Nodes,
     Node1 =
         if ScopeUp ->
@@ -430,7 +431,7 @@ next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{_,
         end,
     State#state{nodes = Nodes#{Name => Node1}};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{_, Name, _}, _Scope, Pid, Group]}) ->
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{Name, _}, _Scope, Pid, Group]}) ->
     #{Name := #node{scope = ScopeUp} = Node} = Nodes,
     if ScopeUp ->
         State#state{nodes = Nodes#{Name => Node#node{
@@ -439,8 +440,8 @@ next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, join_group, [{_,
             State
     end;
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, leave_group, [{_, Name, _}, _Scope, Pids, Group]}) when is_list(Pids) ->
-    % may ignore scope up/down
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, leave_group, [{Name, _}, _Scope, Pids, Group]}) when is_list(Pids) ->
+    %% may ignore scope up/down
     #{Name := Node} = Nodes,
     Node1 = lists:foldl(
         fun (Pid, Node0) ->
@@ -448,8 +449,8 @@ next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, leave_group, [{_
         end, Node, Pids),
     State#state{nodes = Nodes#{Name => Node1}};
 
-next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, leave_group, [{_, Name, _}, _Scope, Pid, Group]}) ->
-    % may ignore scope up/down
+next_state(#state{nodes = Nodes} = State, _Res, {call, ?MODULE, leave_group, [{Name, _}, _Scope, Pid, Group]}) ->
+    %% may ignore scope up/down
     #{Name := Node} = Nodes,
     State#state{nodes = Nodes#{Name =>
         Node#node{procs = maps:update_with(Pid, fun (L) -> lists:delete(Group, L) end, Node#node.procs)}}};
@@ -466,21 +467,18 @@ next_state(State, _Res, {call, ?MODULE, get_local_members, [_Access, _Scope, _Gr
 prop_sequential(Control) ->
     ?FORALL(Cmds, proper_statem:commands(?MODULE),
         begin
-            {_History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
-            % cleanup: kill slave nodes
-            Name = node(),
-            % kill processes
-            #state{scope_name = ScopeName, nodes = Nodes} = State,
-            #{Name := #node{procs = Procs}} = Nodes,
-            [exit(P, kill) || P <- maps:keys(Procs)],
-            % stop spg server
-            whereis(ScopeName) =/= undefined andalso gen_server:stop(ScopeName),
-            % close sockets & stop controlling procs
-            [(catch gen_node:stop(Sock)) ||
-                {N, #node{socket = Sock}} <- maps:to_list(Nodes), Name =/= N],
-            % report progress
-            Control ! progress,
-            Result =:= ok
+            try
+                {History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
+                %% cleanup: kill slave nodes
+                [(catch gen_node:stop(Sock)) || #node{socket = Sock} <- maps:values(State#state.nodes)],
+                %% report progress
+                Control ! progress,
+                Result =/= ok andalso (Control ! {error, {Result, State, History, Cmds}}),
+                Result =:= ok
+            catch
+                Class:Reason:Stack ->
+                    Control ! {error, {Class, Reason, Stack}}
+            end
         end
     ).
 
@@ -493,12 +491,12 @@ spg_sequential() ->
 spg_sequential(Config) when is_list(Config) ->
     TotalTests = 10000,
     Control = self(),
-    % Run as many threads as there are schedulers, multiplied by 2 for some better concurrency
+    %% Run as many threads as there are schedulers, multiplied by 2 for some better concurrency
     Online = erlang:system_info(schedulers_online) * 2,
-    %  ... and every model does part of the job
+    %%  ... and every model does part of the job
     TestsPerProcess = TotalTests div Online,
-    ?assert(TestsPerProcess > 5), % otherwise this test makes no sense
-    % First process received additional items
+    ?assert(TestsPerProcess > 5), %% otherwise this test makes no sense
+    %% First process received additional items
     Extra = TotalTests - (TestsPerProcess * Online),
     TestProcs = [TestsPerProcess + Extra | [TestsPerProcess || _ <- lists:seq(2, Online)]],
     Workers =
@@ -525,13 +523,18 @@ wait_result(Started, Done, Total, Workers) ->
                     Passed = Now - Started,
                     Speed = Done1 / Passed,
                     Remaining = erlang:round((Total - Done1) / Speed),
-                    %erlang:display({Done1, Passed, Speed, Total, Remaining}),
                     io:fwrite(user, "~b of ~b complete (elapsed ~s, ~s left, ~.2f per second) ~n",
                         [Done1, Total, format_time(Passed), format_time(Remaining), Speed])
                 end,
             wait_result(Started, Done + 1, Total, Workers);
         {Pid, true} ->
             wait_result(Started, Done, Total, lists:delete(Pid, Workers));
+        {error, {Result, State, History, Cmds}} ->
+            Failed = if History =:= [] -> hd(Cmds); true -> lists:nth(length(History), Cmds) end,
+            io:fwrite(user,
+                "=======~nCommand: ~120p~n~nState: ~120p~n~n=======~nResult: ~120p~n~nCommands: ~120p~n~nHistory: ~200p~n~n",
+                [Failed, State, Result, Cmds, History]),
+            {fail, {error, Result}};
         {error, Reason} ->
             {fail, {error, Reason}};
         CounterExample ->

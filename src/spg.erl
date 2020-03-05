@@ -266,7 +266,6 @@ handle_info({join, Peer, Group, PidOrPids}, #state{scope = Scope, nodes = Nodes}
         {MRef, RemoteGroups} ->
             join_remote(Scope, Group, PidOrPids),
             %% store remote group => pids map for fast sync operation
-            {MRef, RemoteGroups} = maps:get(Peer, Nodes),
             NewRemoteGroups = join_remote_map(Group, PidOrPids, RemoteGroups),
             {noreply, State#state{nodes = Nodes#{Peer => {MRef, NewRemoteGroups}}}};
         [] ->

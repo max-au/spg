@@ -23,6 +23,7 @@
     errors/0, errors/1,
     leave_exit_race/0, leave_exit_race/1,
     single/0, single/1,
+    dyn_distribution/0, dyn_distribution/1,
     process_owner_check/0, process_owner_check/1,
     overlay_missing/0, overlay_missing/1,
     two/1,
@@ -82,7 +83,7 @@ end_per_testcase(TestCase, _Config) ->
     ok.
 
 all() ->
-    [app, {group, basic}, {group, cluster}, {group, performance}].
+    [app, dyn_distribution, {group, basic}, {group, cluster}, {group, performance}].
 
 groups() ->
     [
@@ -181,6 +182,16 @@ single(Config) when is_list(Config) ->
     ?assertEqual([self()], spg:get_local_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     ?assertEqual(ok, spg:leave(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
     ok.
+
+dyn_distribution() ->
+    [{doc, "Tests that local node when distribution is started dynamically is not treated as remote node"}].
+
+dyn_distribution(Config) when is_list(Config) ->
+    OldNode = node(),
+    ok = net_kernel:stop(),
+    ?assertEqual(ok, spg:join(?FUNCTION_NAME, ?FUNCTION_NAME, self())),
+    {ok, _Pid} = net_kernel:start([OldNode, shortnames]),
+    ?assertEqual([self()], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)).
 
 process_owner_check() ->
     [{doc, "Tests that process owner is local node"}].

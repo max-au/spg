@@ -236,20 +236,6 @@ handle_call(_Request, _From, _S) ->
 handle_cast({sync, Peer, Groups}, #state{scope = Scope, nodes = Nodes} = State) ->
     {noreply, State#state{nodes = handle_sync(Scope, Peer, Nodes, Groups)}};
 
-%% Migration clauses: originally, spg implemented some events via gen_server:cast,
-%%  while it was not necessary.
-%% These migration clauses will be removed when spg lives through another major version.
-handle_cast({join, Peer, Group, PidOrPids}, State) ->
-    handle_info({join, Peer, Group, PidOrPids}, State);
-
-handle_cast({leave, Peer, PidOrPids, Groups}, State) ->
-    handle_info({leave, Peer, PidOrPids, Groups}, State);
-
-handle_cast({discover, Peer}, State) ->
-    handle_info({discover, Peer}, State);
-%% ^^^
-%% Compatibility migration clauses.
-
 handle_cast(_, _State) ->
     error(badarg).
 
@@ -285,9 +271,9 @@ handle_info({leave, Peer, PidOrPids, Groups}, #state{scope = Scope, nodes = Node
                 fun (Group, Acc) ->
                     case maps:get(Group, Acc) of
                         PidOrPids ->
-                            Acc;
+                            maps:remove(Group, Acc);
                         [PidOrPids] ->
-                            Acc;
+                            maps:remove(Group, Acc);
                         Existing when is_pid(PidOrPids) ->
                             Acc#{Group => lists:delete(PidOrPids, Existing)};
                         Existing ->

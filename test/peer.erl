@@ -391,6 +391,12 @@ handle_info({inet_async, LSock, _Ref, {ok, CliSocket}},
     catch gen_tcp:close(LSock),
     {noreply, State#peer_state{connection = CliSocket, listen_socket = undefined}};
 
+handle_info({inet_async, LSock, _Ref, {error, Reason}},
+    #peer_state{listen_socket = LSock} = State) ->
+    %% failed to accept a TCP connection request
+    catch gen_tcp:close(LSock),
+    {stop, {inet_async, Reason}, State#peer_state{connection = undefined}};
+
 %% booting: peer notifies via Erlang distribution
 handle_info({peer_started, Node, Pid},
     #peer_state{options = #{node := Node}} = State) ->

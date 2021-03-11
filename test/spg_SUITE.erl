@@ -127,7 +127,7 @@ app() ->
     [{doc, "Tests application start/stop functioning, supervision & scopes"}].
 
 app(_Config) ->
-    {ok, _Apps} = application:ensure_all_started(spg),
+    {ok, Apps} = application:ensure_all_started(spg),
     ?assertNotEqual(undefined, whereis(spg)),
     ?assertNotEqual(undefined, ets:whereis(spg)),
     ok = application:stop(spg),
@@ -135,7 +135,7 @@ app(_Config) ->
     ?assertEqual(undefined, ets:whereis(spg)),
     %
     application:set_env(spg, scopes, [?FUNCTION_NAME, two]),
-    {ok, _Apps} = application:ensure_all_started(spg),
+    {ok, Apps} = application:ensure_all_started(spg),
     ?assertNotEqual(undefined, whereis(?FUNCTION_NAME)),
     ?assertNotEqual(undefined, whereis(two)),
     ?assertNotEqual(undefined, ets:whereis(?FUNCTION_NAME)),

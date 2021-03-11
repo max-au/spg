@@ -468,7 +468,7 @@ prop_sequential(Control) ->
             try
                 {History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
                 %% cleanup: kill slave nodes
-                [(catch gen_node:stop(Sock)) || #node{socket = Sock} <- maps:values(State#state.nodes)],
+                [peer:stop(Sock) || #node{socket = Sock} <- maps:values(State#state.nodes)],
                 %% report progress
                 Control ! progress,
                 Result =/= ok andalso (Control ! {error, {Result, State, History, Cmds}}),

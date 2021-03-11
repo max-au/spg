@@ -314,7 +314,7 @@ init(Options) ->
 
     %% close port if running detached
     Conn = if Detached ->
-                   erlang:port_close(Port),
+                   catch erlang:port_close(Port), %% catch for race conditions
                    receive {'EXIT', Port, _} -> undefined end;
                true ->
                    Port

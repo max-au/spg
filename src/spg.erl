@@ -500,15 +500,7 @@ leave_remote(Scope, Pids, Groups) ->
         Group <- Groups].
 
 leave_update_remote_map(Pid, RemoteMap, Groups) when is_pid(Pid) ->
-    lists:foldl(
-        fun (Group, Acc) ->
-            case maps:get(Group, Acc) -- [Pid] of
-                [] ->
-                    maps:remove(Group, Acc);
-                Remaining ->
-                    Acc#{Group => Remaining}
-            end
-        end, RemoteMap, Groups);
+    leave_update_remote_map([Pid], RemoteMap, Groups);
 leave_update_remote_map(Pids, RemoteMap, Groups) ->
     lists:foldl(
         fun (Group, Acc) ->

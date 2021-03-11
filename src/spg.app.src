@@ -1,16 +1,15 @@
 {application, spg,
  [{description, "Scalable Process Groups"},
-  {vsn, "1.1.1"},
+  {vsn, "1.1.2"},
   {registered, [spg_sup, spg]},
   {mod, {spg_app, []}},
   {applications,
    [kernel,
     stdlib
    ]},
-  {env,[
+  {env, [
    % {scopes, [spg]}
   ]},
-  {modules, [spg, spg_app, spg_sup]},
 
   {licenses, ["BSD 3-clause clear"]},
   {links, [{"GitHub", "https://github.com/max-au/spg"}]}

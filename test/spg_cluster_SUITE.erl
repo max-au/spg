@@ -72,20 +72,18 @@ all() ->
 
 rpc({Node, _Sock}, _M, _F, _A) when Node =:= node() ->
     error({local, Node});
-rpc({_Node, Sock}, M, F, A) ->
-    catch gen_node:rpc(Sock, M, F, A).
+rpc({_Node, Peer}, M, F, A) ->
+    catch peer:apply(Peer, M, F, A).
 
 start_node() ->
-    %% generate node name based on os pid & self pid + time
-    Name = scope_name(integer_to_list(erlang:system_time(microsecond))),
-    {ok, Peer} = local_node:start_link(Name, #{auto_connect => false,
-        connection => {undefined, undefined}, detached => true,
-        connect_all => false, code_path => [filename:dirname(code:which(spg))]}),
-    Node = gen_node:get_node(Peer),
+    Node = peer:random_name(false),
+    {ok, Peer} = peer:start_link(#{node => Node, connection => 0,
+        args => ["-connect_all", "false", "-kernel", "dist_auto_connect", "never",
+            "-pz", filename:dirname(code:which(spg))], longnames => false}),
     {Node, Peer}.
 
-stop_node({_Node, Control}) ->
-    ok =:= gen_node:stop(Control).
+stop_node({_Node, Peer}) ->
+    ok =:= gen_server:stop(Peer).
 
 start_scope(Access, Scope) ->
     rpc(Access, spg, start, [Scope]).
@@ -470,7 +468,7 @@ prop_sequential(Control) ->
             try
                 {History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
                 %% cleanup: kill slave nodes
-                [(catch gen_node:stop(Sock)) || #node{socket = Sock} <- maps:values(State#state.nodes)],
+                [peer:stop(Sock) || #node{socket = Sock} <- maps:values(State#state.nodes)],
                 %% report progress
                 Control ! progress,
                 Result =/= ok andalso (Control ! {error, {Result, State, History, Cmds}}),

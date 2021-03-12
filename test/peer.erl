@@ -521,7 +521,8 @@ decode_port_data(<<Char:8, Rest/binary>>, Str, Bin) ->
 %% concatenates bitstring (by default it's not possible to
 %%  add bits to non-byte-aligned binary)
 quad_concat(Bin, Quad, Size) when Size rem 8 =:= 4 ->
-    <<BinPart:(Size div 8)/binary, Before:4>> = Bin,
+    ByteSize = Size div 8,
+    <<BinPart:ByteSize/binary, Before:4>> = Bin,
     <<BinPart/binary, Before:4, Quad:4>>;
 quad_concat(Bin, Quad, _Size) ->
     <<Bin/binary, Quad:4>>.

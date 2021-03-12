@@ -58,7 +58,12 @@ init_per_suite(Config) ->
     case erlang:is_alive() of
         false ->
             %% verify epmd running (otherwise next call fails)
-            (erl_epmd:names("localhost") =:= {error, address}) andalso ([] = os:cmd("epmd -daemon")),
+            (erl_epmd:names() =:= {error, address}) andalso
+                begin ([] = os:cmd("epmd -daemon")),
+                timer:sleep(500) %% this is needed to let some time for daemon to actually start
+            end,
+            %% verify that epmd indeed started
+            {ok, _} = erl_epmd:names(),
             %% start a random node name
             NodeName = list_to_atom(lists:concat([atom_to_list(?MODULE), "_", os:getpid()])),
             {ok, Pid} = net_kernel:start([NodeName, shortnames]),
@@ -283,14 +288,14 @@ empty_group_by_remote_leave(Config) when is_list(Config) ->
     RemoteNode = rpc:call(TwoPeer, erlang, whereis, [?FUNCTION_NAME]),
     RemotePid = erlang:spawn(TwoPeer, forever()),
     % remote join
-    ?assertEqual(ok, rpc:call(TwoPeer, pg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
+    ?assertEqual(ok, rpc:call(TwoPeer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
     sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([RemotePid], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     % inspecting internal state is not best practice, but there's no other way to check if the state is correct.
     {state, _, _, #{RemoteNode := {_, RemoteMap}}} = sys:get_state(?FUNCTION_NAME),
     ?assertEqual(#{?FUNCTION_NAME => [RemotePid]}, RemoteMap),
     % remote leave
-    ?assertEqual(ok, rpc:call(TwoPeer, pg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
+    ?assertEqual(ok, rpc:call(TwoPeer, spg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, RemotePid])),
     sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
         {state, _, _, #{RemoteNode := {_, NewRemoteMap}}} = sys:get_state(?FUNCTION_NAME),
@@ -299,11 +304,11 @@ empty_group_by_remote_leave(Config) when is_list(Config) ->
 
     %% another variant of emptying a group remotely: join([Pi1, Pid2]) and leave ([Pid2, Pid1])
     RemotePid2 = erlang:spawn(TwoPeer, forever()),
-    ?assertEqual(ok, rpc:call(TwoPeer, pg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid, RemotePid2]])),
+    ?assertEqual(ok, rpc:call(TwoPeer, spg, join, [?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid, RemotePid2]])),
     sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([RemotePid, RemotePid2], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     %% now leave
-    ?assertEqual(ok, rpc:call(TwoPeer, pg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid2, RemotePid]])),
+    ?assertEqual(ok, rpc:call(TwoPeer, spg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid2, RemotePid]])),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     {state, _, _, #{RemoteNode := {_, NewRemoteMap}}} = sys:get_state(?FUNCTION_NAME),
     stop_node(TwoPeer, Socket),

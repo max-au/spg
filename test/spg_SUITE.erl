@@ -145,7 +145,8 @@ app(_Config) ->
     ?assertNotEqual(undefined, whereis(two)),
     ?assertNotEqual(undefined, ets:whereis(?FUNCTION_NAME)),
     ?assertNotEqual(undefined, ets:whereis(two)),
-    application:stop(spg),
+    ok = application:stop(spg),
+    ok = application:unload(spg),
     ?assertEqual(undefined, whereis(?FUNCTION_NAME)),
     ?assertEqual(undefined, whereis(two)).
 
@@ -309,6 +310,7 @@ empty_group_by_remote_leave(Config) when is_list(Config) ->
     ?assertEqual([RemotePid, RemotePid2], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     %% now leave
     ?assertEqual(ok, rpc:call(TwoPeer, spg, leave, [?FUNCTION_NAME, ?FUNCTION_NAME, [RemotePid2, RemotePid]])),
+    sync({?FUNCTION_NAME, TwoPeer}),
     ?assertEqual([], spg:get_members(?FUNCTION_NAME, ?FUNCTION_NAME)),
     {state, _, _, #{RemoteNode := {_, NewRemoteMap}}} = sys:get_state(?FUNCTION_NAME),
     stop_node(TwoPeer, Socket),
@@ -355,7 +357,7 @@ netsplit(Config) when is_list(Config) ->
     RemoteOldPid = erlang:spawn(Peer, forever()),
     ?assertEqual(ok, rpc:call(Peer, spg, join, [?FUNCTION_NAME, '$invisible', RemoteOldPid])),
     %% hohoho, partition!
-    net_kernel:disconnect(Peer),
+    true = net_kernel:disconnect(Peer),
     ?assertEqual(Peer, rpc(Socket, erlang, node, [])), %% just to ensure RPC still works
     RemotePid = rpc(Socket, erlang, spawn, [forever()]),
     ?assertEqual([], rpc(Socket, erlang, nodes, [])),
@@ -370,6 +372,7 @@ netsplit(Config) when is_list(Config) ->
 
     ?assertNot(lists:member(Peer, nodes())), %% should be no nodes in the cluster
 
+    true = net_kernel:connect_node(Peer),
     pong = net_adm:ping(Peer),
     %% now ensure sync happened
     Pids = lists:sort([RemotePid, LocalPid]),

@@ -144,8 +144,12 @@ Feature requests that are being considered (feel free to submit PR implementing 
 
 ## Changelog
 
+Version 1.2:
+ - updated for OTP 25 support (property-based test requires OTP 25 now)
+ - removed benchmarking suites, generic cleanup
+
 Version 1.1.2:
- - updated stateful property-based test to run multuple instances in parallel
+ - updated stateful property-based test to run multiple instances in parallel
 
 Version 1.1.1:
  - revised tests to allow larger amount of nodes for property-based testing

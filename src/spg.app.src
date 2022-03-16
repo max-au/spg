@@ -1,6 +1,6 @@
 {application, spg,
  [{description, "Scalable Process Groups"},
-  {vsn, "1.1.2"},
+  {vsn, "1.2"},
   {registered, [spg_sup, spg]},
   {mod, {spg_app, []}},
   {applications,

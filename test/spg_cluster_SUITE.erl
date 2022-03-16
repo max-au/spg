@@ -70,10 +70,11 @@ all() ->
 -define(GROUPS, [one, two, three, four]).
 
 start_node() ->
-    {ok, Peer} = peer:start_link(#{name => peer:random_name(?MODULE), connection => 0,
+    {ok, Pid, Node} = peer:start_link(#{name => peer:random_name(?MODULE), connection => standard_io,
         args => ["-connect_all", "false", "-kernel", "dist_auto_connect", "never",
-            "-pz", filename:dirname(code:which(spg))]}),
-    Peer.
+            "-pz", filename:dirname(code:which(spg)), "-pz", filename:dirname(code:which(?MODULE))]}),
+    register(Node, Pid),
+    Node.
 
 stop_node(Peer) ->
     ok =:= peer:stop(Peer).
@@ -91,7 +92,7 @@ stop_proc(Peer, Pid) ->
     catch peer:call(Peer, spg_SUITE, stop_proc, [Pid]).
 
 connect_peer(Peer, NodeTwo) ->
-    peer:call(Peer, net_kernel, connect_node, [NodeTwo]),
+    peer:call(Peer, net_kernel, connect_node, [NodeTwo], 15000),
     State = peer:call(Peer, sys, get_state, [net_kernel]),
     ?assertEqual(state, element(1, State)).
 
@@ -140,7 +141,7 @@ scope_name(Extra) ->
     list_to_atom(lists:concat(["scope_", os:getpid(), "_", Pid, "-", Extra])).
 
 initial_state() ->
-    #state{scope_name = scope_name("")}.
+    #state{scope_name = scope_name("init")}.
 
 proc_exist(Name, Nodes, Pid) ->
     case maps:find(Name, Nodes) of
@@ -257,8 +258,11 @@ postcondition(#state{nodes = Nodes}, {call, ?MODULE, get_local_members, [Name, S
                     true;
                 _Actual ->
                     %% optimistic didn't work, go sync and try again
-                    peer:call(Name, sys, get_log, [Scope]),
+                    ProcState = peer:call(Name, sys, get_state, [Scope]),
                     Synced = lists:sort(peer:call(Name, spg, get_local_members, [Scope, Group])),
+                    Synced =/= Local andalso
+                        io:fwrite(user, "Incorrect local members on node ~s (scope ~s)~nExpected ~200p~nActual ~200p~nProcState: ~200p~n",
+                            [Name, Scope, Local, Synced, ProcState]),
                     Synced =:= Local
             end
     end;
@@ -296,8 +300,8 @@ retry_get_members(Nodes, Node, Scope, Group, Expected, 0) ->
     Res = lists:sort(get_members(Node, Scope, Group)),
     Missing = Expected -- Res, Extra = Res -- Expected,
     Res =/= Expected andalso
-        io:fwrite(user, "get_members failed: ~nMissing: ~p~nExtra: ~p~nNodes: ~p~nExpected nodes: ~p~n",
-            [Missing, Extra, peer:call(Node, erlang, nodes, []), Nodes]),
+        io:fwrite(user, "get_members on ~s (scope ~s) failed: ~nMissing: ~p~nExtra: ~p~nNodes: ~p~nExpected nodes: ~p~n",
+            [Node, Scope, Missing, Extra, peer:call(Node, erlang, nodes, []), Nodes -- [Node]]),
     false;
 retry_get_members(Nodes, Node, Scope, Group, Expected, Left) ->
     timer:sleep(5),

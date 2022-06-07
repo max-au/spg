@@ -403,7 +403,7 @@ handle_info({'DOWN', MRef, process, Pid, _Info}, #state{scope = Scope, remote = 
     scope_monitors = Monitors, monitored_groups = MG} = State)  ->
     case maps:take(Pid, Remote) of
         {{MRef, RemoteMap}, NewRemote} ->
-            maps:foreach(fun (Group, Pids) ->
+            foreach(fun (Group, Pids) ->
                 leave_remote_update_ets(Scope, Monitors, MG, Pids, [Group]) end, RemoteMap),
             {noreply, State#state{remote = NewRemote}};
         error ->
@@ -667,7 +667,7 @@ demonitor_group(Tag, Group, MG) ->
 
 %% notify all monitors about an Action in Groups for Pids
 notify_group(ScopeMonitors, MG, Action, Group, Pids) ->
-    maps:foreach(
+    foreach(
         fun (Ref, Pid) ->
             erlang:send(Pid, {Ref, Action, Group, Pids}, [noconnect])
         end, ScopeMonitors),
@@ -686,3 +686,12 @@ flush(Ref) ->
     after 0 ->
         ok
     end.
+
+-if(?OTP_RELEASE >= 24).
+foreach(Fun, Map) ->
+    maps:foreach(Fun, Map).
+-else.
+%% OTP-21, 22 and 23 compatibility
+foreach(Fun, Map) ->
+    [Fun(Key, Value) || {Key, Value} <- maps:to_list(Map)].
+-endif.

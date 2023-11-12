@@ -1,6 +1,10 @@
 spg: Scalable Process Groups
 =====
 
+> **Warning**
+> This project is no longer maintained. OTP 26 is the last supported version.
+> Consider switching to `pg`, which is an official part of OTP distribution.
+
 Replacement for Erlang/OTP pg2 implementation. Implements Strong Eventual 
 Consistency (SEC), and an overlay network over Erlang Distribution Cluster.
 
@@ -143,6 +147,10 @@ Feature requests that are being considered (feel free to submit PR implementing 
  * health checks
 
 ## Changelog
+
+Version 1.2.1:
+ - tested to OTP 26 support
+ - minor bugfixes
 
 Version 1.2:
  - updated for OTP 25 support (property-based test requires OTP 25 now)
